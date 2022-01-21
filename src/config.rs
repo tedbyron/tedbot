@@ -15,6 +15,9 @@ pub struct Config {
     pub activity: Option<Activity>,
 }
 
+// TODO: trace_err fn on propagated errs
+// TODO: instrument config load
+
 pub fn load() -> Result<Config, crate::Error> {
     // Tracing level.
     let log = if let Ok(level) = env::var("TEDBOT_LOG") {
@@ -25,17 +28,14 @@ pub fn load() -> Result<Config, crate::Error> {
     };
 
     // Discord bot token.
-    let token = if let Ok(token) = env::var("TEDBOT_TOKEN") {
-        token
-    } else {
-        return Err(Box::from("Missing TEDBOT_TOKEN env var"));
-    };
+    let token = env::var("TEDBOT_TOKEN")?;
     let token_components = match client::parse_token(&token) {
         Some(components) => components,
         None => return Err(Box::from("Invalid TEDBOT_TOKEN env var")),
     };
 
     // Guild whitelist.
+    // TODO: Result::ok()
     let whitelist = if let Ok(wl) = env::var("TEDBOT_WHITELIST") {
         if wl.is_empty() {
             None
