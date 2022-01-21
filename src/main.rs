@@ -22,18 +22,17 @@ pub type Error = Box<dyn std::error::Error>;
 
 #[tokio::main]
 async fn main() -> Result<(), crate::Error> {
+    #[cfg(feature = "dotenv")]
+    dotenv::dotenv()?;
+
+    let cfg = config::load()?;
+
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(EnvFilter::from_env("TEDBOT_LOG"))
         .init();
 
     // NOTE: Intersperse is not yet stable https://github.com/rust-lang/rust/issues/79524
     tracing::trace!(command = %env::args().collect::<Vec<_>>().join(" "));
-
-    // Load the config file into a buffer and deserialize it.
-    let mut buf = String::with_capacity(1024);
-    let mut path_buf = env::current_dir()?;
-    path_buf.push("config.toml");
-    let cfg = config::load(path_buf.as_os_str(), &mut buf)?;
 
     let mut client = Client::builder(&cfg.token).event_handler(Handler).await?;
     client.start().await?;

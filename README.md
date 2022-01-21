@@ -2,9 +2,13 @@
   <h1><code>tedbot-rs</code></h1>
 </div>
 
-# Usage
+## Usage
 
-Setup a `config.toml` following the example `example.config.toml`.
+### Development
 
-Modifying the log level requires a `RUST_LOG` environment variable. Valid log level values and
-their verbosity levels are `ERROR < WARN < INFO <= DEBUG < TRACE`. The default log level is `INFO`.
+- Setup a `.env` file using the example `example.env`.
+- Use `--features dotenv` when building and running to enable the `dotenv` feature.
+
+### Production (`--release`)
+
+- Set environment variables using the example `example.env`.
