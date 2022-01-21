@@ -16,6 +16,7 @@ pub struct Config {
 }
 
 pub fn load() -> Result<Config, crate::Error> {
+    // Tracing level.
     let log = if let Ok(level) = env::var("TEDBOT_LOG") {
         level
     } else {
@@ -23,14 +24,19 @@ pub fn load() -> Result<Config, crate::Error> {
         String::from("INFO")
     };
 
-    let token = env::var("TEDBOT_TOKEN")?;
+    // Discord bot token.
+    let token = if let Ok(token) = env::var("TEDBOT_TOKEN") {
+        token
+    } else {
+        return Err(Box::from("Missing TEDBOT_TOKEN env var"));
+    };
     let token_components = match client::parse_token(&token) {
         Some(components) => components,
         None => return Err(Box::from("Invalid TEDBOT_TOKEN env var")),
     };
 
-    let whitelist_res = env::var("TEDBOT_WHITELIST");
-    let whitelist = if let Ok(wl) = whitelist_res {
+    // Guild whitelist.
+    let whitelist = if let Ok(wl) = env::var("TEDBOT_WHITELIST") {
         if wl.is_empty() {
             None
         } else {
@@ -56,8 +62,10 @@ pub fn load() -> Result<Config, crate::Error> {
         None
     };
 
+    // Command prefix.
     let prefix = env::var("TEDBOT_PREFIX")?;
 
+    // Bot user activity.
     let activity = match (
         env::var("TEDBOT_ACTIVITY_TYPE"),
         env::var("TEDBOT_ACTIVITY_NAME"),
