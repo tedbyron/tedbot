@@ -1,0 +1,14 @@
+# Discord bot token
+token = ''
+
+# Server whitelist (not enforced if empty)
+whitelist = ['server id']
+
+# Bot activity
+# https://discord.com/developers/docs/game-sdk/activities#data-models-activitytype-enum
+activity_type = '2'
+# https://discord.com/developers/docs/game-sdk/activities#updateactivity-parameters
+activity = 'for !commands'
+
+# Command prefix
+prefix = '!'
