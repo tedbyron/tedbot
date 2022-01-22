@@ -6,8 +6,9 @@ use serenity::client::{self, TokenComponents};
 use serenity::model::id::GuildId;
 use serenity::model::prelude::Activity;
 
+/// A parsed app configuration from environment variables.
+#[derive(Debug)]
 pub struct Config {
-    pub log: String,
     pub token: String,
     pub token_components: TokenComponents,
     pub whitelist: Option<Vec<GuildId>>,
@@ -15,55 +16,52 @@ pub struct Config {
     pub activity: Option<Activity>,
 }
 
-// TODO: trace_err fn on propagated errs
-// TODO: instrument config load
-
-pub fn load() -> Result<Config, crate::Error> {
-    // Tracing level.
-    let log = if let Ok(level) = env::var("TEDBOT_LOG") {
-        level
-    } else {
-        env::set_var("TEDBOT_LOG", "INFO");
-        String::from("INFO")
-    };
-
+/// Load and parse environment variables into a [`Config`].
+#[tracing::instrument]
+pub fn load() -> crate::Result<Config> {
     // Discord bot token.
-    let token = env::var("TEDBOT_TOKEN")?;
+    let token = match env::var("TEDBOT_TOKEN") {
+        Ok(token) => token,
+        Err(_) => return Err(Box::from("Missing TEDBOT_TOKEN env var")),
+    };
     let token_components = match client::parse_token(&token) {
         Some(components) => components,
         None => return Err(Box::from("Invalid TEDBOT_TOKEN env var")),
     };
 
     // Guild whitelist.
-    // TODO: Result::ok()
-    let whitelist = if let Ok(wl) = env::var("TEDBOT_WHITELIST") {
-        if wl.is_empty() {
-            None
-        } else {
-            let whitelist_int = wl
-                .trim()
-                .split(|c: char| !c.is_ascii_digit())
-                .map(str::parse::<u64>)
-                .collect::<Vec<_>>();
-
-            if whitelist_int.iter().all(Result::is_ok) {
-                Some(
-                    whitelist_int
-                        .into_iter()
-                        .filter_map(Result::ok)
-                        .map(GuildId::from)
-                        .collect(),
-                )
+    let whitelist = match env::var("TEDBOT_WHITELIST") {
+        Ok(wl_string) => {
+            if wl_string.is_empty() {
+                None
             } else {
-                return Err(Box::from("Invalid TEDBOT_WHITELIST env var"));
+                let wl = wl_string
+                    .trim()
+                    .split(|c: char| !c.is_ascii_digit())
+                    .map(str::parse::<u64>)
+                    .filter_map(Result::ok)
+                    .map(GuildId::from)
+                    .collect::<Vec<_>>();
+
+                if wl.is_empty() {
+                    return Err(Box::from("Invalid TEDBOT_WHITELIST env var"));
+                }
+                Some(wl)
             }
         }
-    } else {
-        None
+        Err(_) => None,
     };
 
     // Command prefix.
-    let prefix = env::var("TEDBOT_PREFIX")?;
+    let prefix = match env::var("TEDBOT_PREFIX") {
+        Ok(prefix) => {
+            if prefix.is_empty() {
+                return Err(Box::from("Empty TEDBOT_PREFIX env var"));
+            }
+            prefix
+        }
+        Err(_) => return Err(Box::from("Missing TEDBOT_PREFIX env var")),
+    };
 
     // Bot user activity.
     let activity = match (
@@ -80,13 +78,10 @@ pub fn load() -> Result<Config, crate::Error> {
                 "competing" => Activity::competing(name),
                 "listening" => Activity::listening(name),
                 "playing" => Activity::playing(name),
-                "streaming" => {
-                    if let Ok(streaming) = env::var("TEDBOT_ACTIVITY_STREAMING") {
-                        Activity::streaming(name, streaming)
-                    } else {
-                        return Err(Box::from("Missing TEDBOT_ACTIVITY_STREAMING env var"));
-                    }
-                }
+                "streaming" => match env::var("TEDBOT_ACTIVITY_STREAMING") {
+                    Ok(streaming) => Activity::streaming(name, streaming),
+                    _ => return Err(Box::from("Missing TEDBOT_ACTIVITY_STREAMING env var")),
+                },
                 "watching" => Activity::watching(name),
                 _ => unreachable!(),
             })
@@ -94,12 +89,16 @@ pub fn load() -> Result<Config, crate::Error> {
         _ => None,
     };
 
-    Ok(Config {
-        log,
+    let cfg = Config {
         token,
         token_components,
         whitelist,
         prefix,
         activity,
-    })
+    };
+
+    tracing::debug!(?cfg);
+    tracing::info!("Config loaded from env");
+
+    Ok(cfg)
 }
