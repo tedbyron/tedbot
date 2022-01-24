@@ -1,3 +1,18 @@
 {
-  "rust-analyzer.cargo.allFeatures": true
+  "[rust]": {
+    "editor.tabSize": 4
+  },
+  "[toml]": {
+    "editor.tabSize": 4
+  },
+  "evenBetterToml.activationStatus": false,
+  "evenBetterToml.formatter.allowedBlankLines": 1,
+  "evenBetterToml.formatter.columnWidth": 100,
+  "evenBetterToml.formatter.trailingNewline": false,
+  "evenBetterToml.semanticTokens": true,
+  "evenBetterToml.taploConfigEnabled": false,
+  "files.associations": {
+    ".env": "shellscript"
+  },
+  "rust-analyzer.cargo.allFeatures": true,
 }

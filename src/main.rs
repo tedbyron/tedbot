@@ -89,3 +89,15 @@ async fn run() -> crate::Result<()> {
 
     Ok(())
 }
+
+trait TraceErr {
+    fn trace_err(self);
+}
+
+impl<T, E: std::fmt::Debug> TraceErr for std::result::Result<T, E> {
+    fn trace_err(self) {
+        if let Err(ref e) = self {
+            tracing::error!("{:?}", e);
+        }
+    }
+}

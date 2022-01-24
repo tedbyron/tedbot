@@ -1,3 +1,4 @@
+#![allow(clippy::unreadable_literal)]
 //! Event handlers.
 
 use std::env;
@@ -10,19 +11,36 @@ use serenity::model::guild::GuildStatus;
 use serenity::model::oauth2::OAuth2Scope;
 use serenity::model::Permissions;
 
+use crate::{wordle, TraceErr};
+
 pub struct Handler;
 
 #[async_trait]
 impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: Message) {
+        if msg.author.bot {
+            return;
+        }
+
+        if msg.content == "ping" {
+            msg.channel_id.say(&ctx.http, "pong").await.trace_err();
+            return;
+        }
+
         if msg.content == "order up" {
-            if let Err(e) = msg
-                .channel_id
+            msg.channel_id
                 .say(&ctx.http, "<:galleyboy:915674675684712509>")
                 .await
-            {
-                tracing::error!("{:?}", e);
-            }
+                .trace_err();
+            return;
+        }
+
+        if let Ok((_, score)) = wordle::parse(&msg.content) {
+            msg.channel_id
+                .say(&ctx.http, format!("```rust\n{:#?}\n```", score))
+                .await
+                .trace_err();
+            return;
         }
     }
 
