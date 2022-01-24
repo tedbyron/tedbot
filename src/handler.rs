@@ -28,7 +28,7 @@ impl EventHandler for Handler {
             match cmd.data.name.as_str() {
                 "ping" => res_str(&ctx, cmd, "pong").await,
                 "order" => res_str(&ctx, cmd, "<:galleyboy:915674675684712509>").await,
-                _ => unreachable!(),
+                _ => res_str(&ctx, cmd, "unimplemented").await,
             }
         }
     }

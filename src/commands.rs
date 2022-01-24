@@ -23,6 +23,7 @@ pub async fn register_guild(ctx: &Context, guild_id: GuildId) {
                         .create_option(|opt| {
                             opt.name("user")
                                 .description("Stats for a specific user.")
+                                .kind(ApplicationCommandOptionType::User)
                         })
                 })
                 .create_application_command(|cmd| {
