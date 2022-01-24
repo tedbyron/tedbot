@@ -9,11 +9,13 @@
 #![windows_subsystem = "console"]
 #![doc = include_str!("../README.md")]
 
+mod commands;
+mod db;
 mod handler;
+mod util;
 mod wordle;
 
 use std::env;
-use std::fmt;
 use std::process;
 
 use serenity::client::bridge::gateway::GatewayIntents;
@@ -22,6 +24,13 @@ use tracing_subscriber::EnvFilter;
 
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 type Result<T> = std::result::Result<T, Error>;
+
+// const BINCODE_CONFIG: bincode::config::Configuration<
+//     bincode::config::BigEndian,
+//     bincode::config::Fixint,
+// > = bincode::config::standard()
+//     .with_big_endian()
+//     .with_fixed_int_encoding();
 
 #[tokio::main]
 async fn main() {
@@ -35,6 +44,7 @@ async fn main() {
 }
 
 async fn run() -> crate::Result<()> {
+    // NOTE: Should only be used in development.
     #[cfg(feature = "dotenv")]
     dotenv::dotenv()?;
 
@@ -44,19 +54,27 @@ async fn run() -> crate::Result<()> {
     };
 
     tracing_subscriber::fmt()
+        .with_target(false)
         .with_env_filter(EnvFilter::from_env("TEDBOT_LOG"))
         .init();
 
-    // NOTE: Intersperse is not yet stable https://github.com/rust-lang/rust/issues/79524
+    // NOTE: Intersperse is not yet stable https://github.com/rust-lang/rust/issues/79524.
     tracing::trace!(command = %env::args().collect::<Vec<_>>().join(" "));
 
-    // Config from env vars.
+    // Get and validate discord bot token from env vars.
     let token = match env::var("TEDBOT_TOKEN") {
         Ok(token) => token,
         Err(_) => return Err(Box::from("Missing TEDBOT_TOKEN env var")),
     };
     if client::validate_token(&token).is_err() {
         return Err(Box::from("Invalid TEDBOT_TOKEN env var"));
+    };
+    let app_id = match env::var("TEDBOT_APPLICATION_ID") {
+        Ok(id) => match id.parse::<u64>() {
+            Ok(parsed) => parsed,
+            Err(_) => return Err(Box::from("INVALID TEDBOT_APPLICATION_ID env var")),
+        },
+        Err(_) => return Err(Box::from("Missing TEDBOT_APPLICATION_ID env var")),
     };
 
     // TODO: Guild whitelist.
@@ -82,23 +100,14 @@ async fn run() -> crate::Result<()> {
     //     Err(_) => None,
     // };
 
+    let db = db::init("tedbot.sled")?;
+
     let mut client = Client::builder(token)
-        .event_handler(handler::Handler)
+        .event_handler(handler::Handler { db })
+        .application_id(app_id)
         .intents(GatewayIntents::GUILD_MESSAGES)
         .await?;
     client.start_autosharded().await?;
 
     Ok(())
-}
-
-trait TraceErr {
-    fn trace_err(self);
-}
-
-impl<T, E: fmt::Debug> TraceErr for std::result::Result<T, E> {
-    fn trace_err(self) {
-        if let Err(ref e) = self {
-            tracing::error!("{:?}", e);
-        }
-    }
 }

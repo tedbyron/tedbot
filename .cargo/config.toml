@@ -1,0 +1,2 @@
+[alias]
+w = ["watch", "--features", "dotenv", "-x", "run"]

@@ -12,7 +12,8 @@
   "evenBetterToml.semanticTokens": true,
   "evenBetterToml.taploConfigEnabled": false,
   "files.associations": {
-    ".env": "shellscript"
+    ".env": "shellscript",
+    ".env.example": "shellscript"
   },
   "rust-analyzer.cargo.allFeatures": true,
 }

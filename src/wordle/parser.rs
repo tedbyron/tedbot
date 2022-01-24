@@ -9,21 +9,7 @@ use nom::multi::count;
 use nom::sequence::{terminated, tuple};
 use nom::IResult;
 
-#[derive(Debug, Clone)]
-pub struct Score {
-    pub day: u32,
-    pub tries: u8,
-    pub grid: Grid,
-}
-
-pub type Grid = Vec<Vec<Letter>>;
-
-#[derive(Debug, Clone, Copy)]
-pub enum Letter {
-    Correct,
-    Partial,
-    Incorrect,
-}
+use super::model::{Grid, Letter, Score};
 
 pub fn parse(input: &str) -> IResult<&str, Score> {
     let (input, (day, tries)) = line1(input)?;
