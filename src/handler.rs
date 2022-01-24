@@ -7,7 +7,6 @@ use serenity::async_trait;
 use serenity::client::{Context, EventHandler};
 use serenity::model::channel::Message;
 use serenity::model::gateway::{Activity, Ready};
-use serenity::model::guild::GuildStatus;
 use serenity::model::oauth2::OAuth2Scope;
 use serenity::model::Permissions;
 
@@ -46,15 +45,7 @@ impl EventHandler for Handler {
 
     async fn ready(&self, ctx: Context, ready: Ready) {
         tracing::debug!(guilds = ?ready.guilds);
-        tracing::info!(
-            "Logged in as {} into {} guilds",
-            ready.user.tag(),
-            ready
-                .guilds
-                .iter()
-                .filter(|&g| !matches!(g, &GuildStatus::Offline(_)))
-                .count()
-        );
+        tracing::info!("Logged in as {}", ready.user.tag());
 
         // Bot user activity.
         let activity = match (

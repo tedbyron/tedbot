@@ -13,6 +13,7 @@ mod handler;
 mod wordle;
 
 use std::env;
+use std::fmt;
 use std::process;
 
 use serenity::client::bridge::gateway::GatewayIntents;
@@ -94,7 +95,7 @@ trait TraceErr {
     fn trace_err(self);
 }
 
-impl<T, E: std::fmt::Debug> TraceErr for std::result::Result<T, E> {
+impl<T, E: fmt::Debug> TraceErr for std::result::Result<T, E> {
     fn trace_err(self) {
         if let Err(ref e) = self {
             tracing::error!("{:?}", e);
