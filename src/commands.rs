@@ -18,14 +18,28 @@ pub async fn register_guild(ctx: &Context, guild_id: GuildId) {
                     cmd.name("order").description("Order a galley boy.")
                 })
                 .create_application_command(|cmd| {
-                    cmd.name("init-wordle")
-                        .description("Initialize a wordle leaderboard.")
+                    cmd.name("wordle")
+                        .description("Show wordle stats.")
                         .create_option(|opt| {
-                            opt.name("channel")
-                                .description("The channel to initialize the leaderboard in.")
-                                .kind(ApplicationCommandOptionType::Channel)
-                                .required(true)
+                            opt.name("user")
+                                .description("Stats for a specific user.")
                         })
+                })
+                .create_application_command(|cmd| {
+                    cmd.name("wordle-init")
+                        .description("Initialize wordle score tracking. Loads previous messages containing wordle scores.")
+                        .create_option(|opt| {
+                                opt.name("channel")
+                                    .description("The channel to initialize the leaderboard in.")
+                                    .kind(ApplicationCommandOptionType::Channel)
+                                    .required(true)
+                            })
+                    })
+                .create_application_command(|cmd| {
+                    cmd.name("wordle-uninit")
+                        .description("Remove wordle score tracking from the server.")
+                        .default_permission(false)
+                    // TODO
                 })
         })
         .await
