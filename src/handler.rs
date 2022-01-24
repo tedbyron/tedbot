@@ -5,8 +5,9 @@ use std::env;
 use serenity::async_trait;
 use serenity::client::{Context, EventHandler};
 use serenity::model::channel::Message;
+use serenity::model::gateway::{Activity, Ready};
+use serenity::model::guild::GuildStatus;
 use serenity::model::oauth2::OAuth2Scope;
-use serenity::model::prelude::{Activity, Ready};
 use serenity::model::Permissions;
 
 pub struct Handler;
@@ -24,9 +25,18 @@ impl EventHandler for Handler {
             }
         }
     }
+
     async fn ready(&self, ctx: Context, ready: Ready) {
         tracing::debug!(guilds = ?ready.guilds);
-        tracing::info!("Bot logged in as {}", ready.user.tag());
+        tracing::info!(
+            "Logged in as {} into {} guilds",
+            ready.user.tag(),
+            ready
+                .guilds
+                .iter()
+                .filter(|&g| !matches!(g, &GuildStatus::Offline(_)))
+                .count()
+        );
 
         // Bot user activity.
         let activity = match (
@@ -34,13 +44,13 @@ impl EventHandler for Handler {
             env::var("TEDBOT_ACTIVITY_NAME"),
         ) {
             (Ok(type_), Ok(name)) => {
-                let activity_type = if let type_ @ ("competing" | "listening" | "playing"
-                | "streaming" | "watching") = type_.as_str()
-                {
-                    type_
-                } else {
-                    tracing::warn!("Invalid TEDBOT_ACTIVITY_TYPE env var");
-                    ""
+                let type_str = type_.as_str();
+                let activity_type = match type_str {
+                    "competing" | "listening" | "playing" | "streaming" | "watching" => type_str,
+                    _ => {
+                        tracing::warn!("Invalid TEDBOT_ACTIVITY_TYPE env var");
+                        ""
+                    }
                 };
 
                 match activity_type {

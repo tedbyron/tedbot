@@ -16,11 +16,12 @@ default = []
 [dependencies]
 tracing = "0.1.29"
 dotenv = { version = "0.15.0", optional = true }
+nom = "7.1.0"
 
 [dependencies.serenity]
 version = "0.10.9"
 default-features = false
-features = ["client", "gateway", "rustls_backend", "model", "unstable_discord_api"]
+features = ["client", "gateway", "rustls_backend", "model"]
 
 [dependencies.tokio]
 version = "1.15.0"

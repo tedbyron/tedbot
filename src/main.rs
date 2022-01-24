@@ -10,15 +10,17 @@
 #![doc = include_str!("../README.md")]
 
 mod handler;
+mod wordle;
 
 use std::env;
 use std::process;
 
-use serenity::Client;
+use serenity::client::bridge::gateway::GatewayIntents;
+use serenity::client::{self, Client};
 use tracing_subscriber::EnvFilter;
 
-pub type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
-pub type Result<T> = std::result::Result<T, Error>;
+type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
+type Result<T> = std::result::Result<T, Error>;
 
 #[tokio::main]
 async fn main() {
@@ -52,19 +54,11 @@ async fn run() -> crate::Result<()> {
         Ok(token) => token,
         Err(_) => return Err(Box::from("Missing TEDBOT_TOKEN env var")),
     };
-    let app_id = match env::var("TEDBOT_APPLICATION_ID") {
-        Ok(app_id) => match app_id.parse::<u64>() {
-            Ok(app_id_int) => app_id_int,
-            Err(_) => return Err(Box::from("Invalid TEDBOT_APPLICATION_ID env var")),
-        },
-        Err(_) => return Err(Box::from("Missing TEDBOT_APPLICATION_ID env var")),
+    if client::validate_token(&token).is_err() {
+        return Err(Box::from("Invalid TEDBOT_TOKEN env var"));
     };
-    // let token_components = match client::parse_token(&token) {
-    //     Some(components) => components,
-    //     None => return Err(Box::from("Invalid TEDBOT_TOKEN env var")),
-    // };
 
-    // Guild whitelist.
+    // TODO: Guild whitelist.
     // let whitelist = match env::var("TEDBOT_WHITELIST") {
     //     Ok(wl_string) => {
     //         if wl_string.is_empty() {
@@ -89,7 +83,7 @@ async fn run() -> crate::Result<()> {
 
     let mut client = Client::builder(token)
         .event_handler(handler::Handler)
-        .application_id(app_id)
+        .intents(GatewayIntents::GUILD_MESSAGES)
         .await?;
     client.start_autosharded().await?;
 
