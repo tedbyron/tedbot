@@ -4,10 +4,9 @@ use std::env;
 
 use sled::{Config, Db, Mode};
 
-// TODO: instrument
-
 /// Initialize a connection to a local `sled` database using environment variables for
 /// configuration.
+#[tracing::instrument]
 pub fn init(file_name: &str) -> crate::Result<Db> {
     let mode = match env::var("TEDBOT_DB_MODE") {
         Ok(mode) => match mode.as_str() {

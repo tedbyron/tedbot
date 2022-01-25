@@ -1,6 +1,7 @@
 //! Event handlers.
 
 use std::env;
+use std::sync::Arc;
 
 use serenity::async_trait;
 use serenity::client::{Context, EventHandler};
@@ -13,6 +14,7 @@ use serenity::model::interactions::application_command::ApplicationCommandIntera
 use serenity::model::interactions::{Interaction, InteractionResponseType};
 use serenity::model::oauth2::OAuth2Scope;
 use serenity::model::Permissions;
+use serenity::prelude::*;
 
 use crate::util::TraceResult;
 // use crate::wordle;
@@ -21,18 +23,27 @@ pub struct Handler {
     pub db: sled::Db,
 }
 
+struct Name;
+impl TypeMapKey for Name {
+    type Value = Arc<RwLock<String>>;
+}
+
 #[async_trait]
 impl EventHandler for Handler {
+    #[tracing::instrument(skip_all)]
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::ApplicationCommand(cmd) = interaction {
             match cmd.data.name.as_str() {
                 "ping" => res_str(&ctx, cmd, "pong").await,
-                "order" => res_str(&ctx, cmd, "<:galleyboy:915674675684712509>").await,
+                "order-up" => res_str(&ctx, cmd, "<:galleyboy:915674675684712509>").await,
+                "thank" => res_str(&ctx, cmd, "you're welcome").await,
+                "wordle-init" => wordle_init(&ctx, cmd).await,
                 _ => res_str(&ctx, cmd, "unimplemented").await,
             }
         }
     }
 
+    #[tracing::instrument(skip_all)]
     async fn message(&self, _ctx: Context, msg: Message) {
         if msg.author.bot {
             return;
@@ -48,9 +59,15 @@ impl EventHandler for Handler {
     }
 
     #[allow(deprecated)]
+    #[tracing::instrument(skip_all)]
     async fn ready(&self, ctx: Context, ready: Ready) {
         tracing::debug!(guilds = ?ready.guilds);
         tracing::info!("Logged in as {}", ready.user.tag());
+
+        {
+            let mut data = ctx.data.write().await;
+            data.insert::<Name>(Arc::new(RwLock::new(ready.user.name.clone())));
+        }
 
         ctx.dnd().await;
 
@@ -83,6 +100,7 @@ impl EventHandler for Handler {
 }
 
 /// Generate an invite URL to add the bot to servers.
+#[tracing::instrument(skip_all)]
 async fn invite_url(ctx: &Context, ready: &Ready) {
     let permissions =
         Permissions::READ_MESSAGES | Permissions::READ_MESSAGE_HISTORY | Permissions::SEND_MESSAGES;
@@ -100,6 +118,7 @@ async fn invite_url(ctx: &Context, ready: &Ready) {
 }
 
 /// Set the bot activity based on environment variables.
+#[tracing::instrument(skip_all)]
 async fn set_activity(ctx: &Context) {
     let activity = match (
         env::var("TEDBOT_ACTIVITY_TYPE"),
@@ -139,6 +158,7 @@ async fn set_activity(ctx: &Context) {
     }
 }
 
+#[tracing::instrument(skip_all)]
 async fn res_str(ctx: &Context, cmd: ApplicationCommandInteraction, content: &str) {
     cmd.create_interaction_response(&ctx.http, |res| {
         res.kind(InteractionResponseType::ChannelMessageWithSource)
@@ -147,3 +167,5 @@ async fn res_str(ctx: &Context, cmd: ApplicationCommandInteraction, content: &st
     .await
     .trace_err();
 }
+
+async fn wordle_init(ctx: &Context, cmd: ApplicationCommandInteraction) {}
