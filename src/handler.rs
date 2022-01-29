@@ -23,9 +23,9 @@ pub struct Handler {
     pub db: sled::Db,
 }
 
-struct Name;
-impl TypeMapKey for Name {
-    type Value = Arc<RwLock<String>>;
+pub struct BotName;
+impl TypeMapKey for BotName {
+    type Value = Arc<str>;
 }
 
 #[async_trait]
@@ -64,12 +64,13 @@ impl EventHandler for Handler {
         tracing::debug!(guilds = ?ready.guilds);
         tracing::info!("Logged in as {}", ready.user.tag());
 
+        ctx.dnd().await;
+
+        // Insert bot name into global state.
         {
             let mut data = ctx.data.write().await;
-            data.insert::<Name>(Arc::new(RwLock::new(ready.user.name.clone())));
+            data.insert::<BotName>(ready.user.name.clone().into());
         }
-
-        ctx.dnd().await;
 
         invite_url(&ctx, &ready).await;
 

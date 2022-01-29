@@ -4,11 +4,19 @@ use serenity::client::Context;
 use serenity::model::id::GuildId;
 use serenity::model::interactions::application_command::ApplicationCommandOptionType;
 
+use crate::handler::BotName;
 use crate::util::TraceResult;
 
 /// Register a command with a guild.
 #[tracing::instrument(skip_all)]
 pub async fn register_guild(ctx: &Context, guild_id: GuildId) {
+    let name = {
+        let lock = ctx.data.read().await;
+        lock.get::<BotName>()
+            .expect("Expected bot name in TypeMap")
+            .clone()
+    };
+
     guild_id
         .set_application_commands(&ctx.http, |commands| {
             commands
@@ -19,15 +27,7 @@ pub async fn register_guild(ctx: &Context, guild_id: GuildId) {
                     cmd.name("order-up").description("There's a fresh galley boy waiting for you")
                 })
                 .create_application_command(|cmd| {
-                    cmd.name("thank").description(
-                        format!(
-                            "Thank {}",
-                            {
-                                let lock = ctx.data.read();
-                                lock.get::<Name>().or_else("the bot")
-                            }
-                        )
-                    )
+                    cmd.name("thank").description(format!("Thank {}", name))
                 })
                 .create_application_command(|cmd| {
                     cmd.name("wordle")

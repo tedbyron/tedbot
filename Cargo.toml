@@ -27,12 +27,12 @@ default-features = false
 features = ["client", "gateway", "rustls_backend", "model", "unstable_discord_api"]
 
 [dependencies.tokio]
-version = "1.15.0"
+version = "1.16.1"
 default-features = false
 features = ["rt-multi-thread", "macros", "parking_lot"]
 
 [dependencies.tracing-subscriber]
-version = "0.3.6"
+version = "0.3.7"
 default-features = false
 features = ["std", "env-filter", "fmt", "ansi", "smallvec", "parking_lot"]
 
