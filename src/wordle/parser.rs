@@ -13,15 +13,15 @@ use super::model::{Grid, Letter, Score};
 
 #[tracing::instrument(skip_all)]
 pub fn parse(input: &str) -> IResult<&str, Score> {
-    let (input, (day, success, tries, hard_mode)) = header(input)?;
-    let (input, grid) = grid(input, tries)?;
+    let (input, (day, success, guesses, hard_mode)) = header(input)?;
+    let (input, grid) = grid(input, guesses)?;
 
     Ok((
         input,
         Score {
             day,
             success,
-            tries,
+            guesses,
             hard_mode,
             grid,
         },
@@ -31,7 +31,7 @@ pub fn parse(input: &str) -> IResult<&str, Score> {
 fn header(input: &str) -> IResult<&str, (u32, bool, u8, bool)> {
     let (input, _) = terminated(tag("Wordle"), space1)(input)?;
     let (input, day) = map_res(terminated(digit1, space1), str::parse)(input)?;
-    let (input, (success, tries)) = map(
+    let (input, (success, guesses)) = map(
         terminated(
             satisfy(|c| c.is_ascii_digit() || c == 'X'),
             pair(char('/'), digit1),
@@ -40,21 +40,21 @@ fn header(input: &str) -> IResult<&str, (u32, bool, u8, bool)> {
     )(input)?;
     let (input, hard_mode) = map(terminated(opt(char('*')), multispace1), is_hard_mode)(input)?;
 
-    Ok((input, (day, success, tries, hard_mode)))
+    Ok((input, (day, success, guesses, hard_mode)))
 }
 
-fn grid(input: &str, tries: u8) -> IResult<&str, Grid> {
+fn grid(input: &str, guesses: u8) -> IResult<&str, Grid> {
     let letter = map(one_of("\u{1f7e9}\u{1f7e8}\u{2b1b}\u{2b1c}"), letter);
     let row = terminated(count(letter, 5), opt(line_ending));
 
-    let (input, grid) = count(row, usize::from(tries))(input)?;
+    let (input, grid) = count(row, usize::from(guesses))(input)?;
 
     Ok((input, grid))
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn is_success(tries: char) -> (bool, u8) {
-    match tries.to_digit(10) {
+fn is_success(guesses: char) -> (bool, u8) {
+    match guesses.to_digit(10) {
         Some(n) => (true, n as u8),
         None => (false, 6),
     }
@@ -95,7 +95,7 @@ this was a hard one";
             Score {
                 day: 213,
                 success: false,
-                tries: 6,
+                guesses: 6,
                 hard_mode: false,
                 grid: vec![
                     vec![Incorrect, Incorrect, Incorrect, Incorrect, Partial],
@@ -124,7 +124,7 @@ this was a hard one";
             Score {
                 day: 224,
                 success: true,
-                tries: 4,
+                guesses: 4,
                 hard_mode: true,
                 grid: vec![
                     vec![Incorrect, Incorrect, Incorrect, Incorrect, Incorrect],

@@ -111,12 +111,12 @@ impl Handler {
                 &ctx.http,
                 if score_count == 0 {
                     format!(
-                        "{msg_count} messages parsed in {timer_minutes}m {timer_seconds}s
+                        "Parsed {msg_count} messages in {timer_minutes}m {timer_seconds}s
 No scores to add or update from <#{channel_id}>"
                     )
                 } else {
                     format!(
-                        "{msg_count} messages parsed in {timer_minutes}m {timer_seconds}s
+                        "Parsed {msg_count} messages in {timer_minutes}m {timer_seconds}s
 Loaded {score_count} scores from {num_users} users from <#{channel_id}>",
                         num_users = unique_users.len(),
                     )
@@ -193,8 +193,8 @@ Loaded {score_count} scores from {num_users} users from <#{channel_id}>",
         };
 
         let mut success_count = 0;
-        let tries_count = tree.len() as f64;
-        let mut tries_total = 0.0;
+        let guess_count = tree.len() as f64;
+        let mut guess_sum = 0.0;
         let mut hard_count = 0;
 
         let mut tree_iter = tree.iter();
@@ -203,7 +203,7 @@ Loaded {score_count} scores from {num_users} users from <#{channel_id}>",
             if score.success {
                 success_count += 1;
             }
-            tries_total += score.tries as f64;
+            guess_sum += score.guesses as f64;
             if score.hard_mode {
                 hard_count += 1;
             }
@@ -214,14 +214,14 @@ Loaded {score_count} scores from {num_users} users from <#{channel_id}>",
             cmd,
             format!(
                 "```
-user:           {username}
-days_played:    {tries_count}
-days_success:   {success_count}
-avg_tries:      {avg_tries:.2}
-hard_mode_days: {hard_count}
+User:            {username}
+Days Played:     {guess_count}
+Successful Days: {success_count}
+Average Guesses: {avg_guesses:.2}
+Hard Mode Days:  {hard_count}
 ```",
                 username = user.name,
-                avg_tries = tries_total / tries_count
+                avg_guesses = guess_sum / guess_count
             ),
         )
         .await;

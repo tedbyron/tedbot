@@ -10,7 +10,7 @@ pub struct TimestampedScore {
 pub struct Score {
     pub day: u32,
     pub success: bool,
-    pub tries: u8,
+    pub guesses: u8,
     pub hard_mode: bool,
     pub grid: Grid,
 }
