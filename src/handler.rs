@@ -215,11 +215,12 @@ Loaded {score_count} scores from {num_users} users from <#{channel_id}>",
             format!(
                 "```
 User:            {username}
-Days Played:     {guess_count}
+Wins / Days:     {success_count} / {guess_count} ({win_rate:.2}%)
 Successful Days: {success_count}
 Average Guesses: {avg_guesses:.2}
 Hard Mode Days:  {hard_count}
 ```",
+                win_rate = success_count as f64 / guess_count as f64 * 100.0,
                 username = user.name,
                 avg_guesses = guess_sum / guess_count
             ),
