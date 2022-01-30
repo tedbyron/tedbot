@@ -23,7 +23,7 @@ use serenity::prelude::*;
 
 use crate::codec;
 use crate::util::TraceResult;
-use crate::wordle::{self, TimestampedScore};
+use crate::wordle;
 
 lazy_static::lazy_static! {
     static ref WORDLE_1: DateTime<Utc> = Utc.ymd(2021, 6, 20).and_hms(0, 0, 0);
@@ -40,7 +40,11 @@ impl TypeMapKey for BotName {
 
 impl Handler {
     #[tracing::instrument(skip_all)]
-    async fn wordle_load(&self, ctx: &Context, cmd: ApplicationCommandInteraction) {
+    async fn wordle_load(
+        &self,
+        ctx: &Context,
+        cmd: ApplicationCommandInteraction,
+    ) -> crate::Result<()> {
         let channel_id = match cmd.data.options.get(0) {
             Some(ApplicationCommandInteractionDataOption {
                 resolved: Some(ApplicationCommandInteractionDataOptionValue::Channel(partial)),
@@ -66,22 +70,22 @@ impl Handler {
             }
 
             if let Ok((_, score)) = wordle::parse(&msg.content) {
-                let author_id = codec::encode(msg.author.id.0).unwrap();
-                let day = codec::encode(score.day).unwrap();
+                let author_id = codec::encode(msg.author.id.0)?;
+                let day = codec::encode(score.day)?;
                 let timestamp = msg.timestamp.timestamp();
-                let score = codec::encode(TimestampedScore { timestamp, score }).unwrap();
-                let tree = self.db.open_tree(author_id).unwrap();
+                let score = codec::encode(wordle::TimestampedScore { timestamp, score })?;
+                let tree = self.db.open_tree(author_id)?;
 
-                match tree.get(&day).unwrap() {
+                match tree.get(&day)? {
                     None => {
-                        tree.insert(day, score).unwrap();
+                        tree.insert(day, score)?;
                         unique_users.insert(msg.author.id.0);
                         score_count += 1;
                     }
                     Some(prev_slice) => {
-                        let (prev, _) = codec::decode::<TimestampedScore>(&prev_slice).unwrap();
+                        let (prev, _) = codec::decode::<wordle::TimestampedScore>(&prev_slice)?;
                         if timestamp < prev.timestamp {
-                            tree.insert(day, score).unwrap();
+                            tree.insert(day, score)?;
                             unique_users.insert(msg.author.id.0);
                             score_count += 1;
                         }
@@ -104,8 +108,32 @@ impl Handler {
                     )
                 },
             )
-            .await
-            .unwrap();
+            .await?;
+
+        Ok(())
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn insert_wordle_score(&self, msg: &Message, score: wordle::Score) -> crate::Result<()> {
+        let author_id = codec::encode(msg.author.id.0)?;
+        let day = codec::encode(score.day)?;
+        let timestamp = msg.timestamp.timestamp();
+        let score = codec::encode(wordle::TimestampedScore { timestamp, score })?;
+        let tree = self.db.open_tree(author_id)?;
+
+        match tree.get(&day)? {
+            None => {
+                tree.insert(day, score)?;
+            }
+            Some(prev_slice) => {
+                let (prev, _) = codec::decode::<wordle::TimestampedScore>(&prev_slice)?;
+                if timestamp < prev.timestamp {
+                    tree.insert(day, score)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -117,7 +145,7 @@ impl EventHandler for Handler {
             match cmd.data.name.as_str() {
                 "order-up" => res_str(&ctx, &cmd, "<:galleyboy:915674675684712509>").await,
                 "thank" => res_str(&ctx, &cmd, "you're welcome").await,
-                "wordle-load" => self.wordle_load(&ctx, cmd).await,
+                "wordle-load" => self.wordle_load(&ctx, cmd).await.trace_err(),
                 // "wordle" => wordle(&ctx, cmd).await,
                 _ => res_str(&ctx, &cmd, "unimplemented").await,
             }
@@ -126,13 +154,18 @@ impl EventHandler for Handler {
 
     #[tracing::instrument(skip_all)]
     async fn message(&self, ctx: Context, msg: Message) {
-        if let Ok((_, _score)) = wordle::parse(&msg.content) {
-            msg.react(
-                &ctx.http,
-                ReactionType::from_str("<:galleyboy:915674675684712509>").unwrap(),
-            )
-            .await
-            .trace_err();
+        if let Ok((_, score)) = wordle::parse(&msg.content) {
+            match self.insert_wordle_score(&msg, score) {
+                Ok(_) => {
+                    msg.react(
+                        &ctx.http,
+                        ReactionType::from_str("<:galleyboy:915674675684712509>").unwrap(),
+                    )
+                    .await
+                    .trace_err();
+                }
+                err @ Err(_) => err.trace_err(),
+            }
         }
 
         if msg.author.bot {
