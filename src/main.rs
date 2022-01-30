@@ -6,9 +6,11 @@
     clippy::cargo,
     rust_2018_idioms
 )]
+#![allow(clippy::unreadable_literal)]
 #![windows_subsystem = "console"]
 #![doc = include_str!("../README.md")]
 
+mod codec;
 mod commands;
 mod db;
 mod handler;
@@ -20,17 +22,20 @@ use std::process;
 
 use serenity::client::bridge::gateway::GatewayIntents;
 use serenity::client::{self, Client};
+use serenity::model::oauth2::OAuth2Scope;
+use serenity::model::Permissions;
 use tracing_subscriber::EnvFilter;
+
+const INTENTS: GatewayIntents = GatewayIntents::GUILD_MESSAGES;
+const SCOPES: &[OAuth2Scope] = &[OAuth2Scope::Bot, OAuth2Scope::ApplicationsCommands];
+
+lazy_static::lazy_static! {
+    static ref PERMISSIONS: Permissions =
+    Permissions::READ_MESSAGES | Permissions::READ_MESSAGE_HISTORY | Permissions::SEND_MESSAGES | Permissions::ADD_REACTIONS;
+}
 
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 type Result<T> = std::result::Result<T, Error>;
-
-// const BINCODE_CONFIG: bincode::config::Configuration<
-//     bincode::config::BigEndian,
-//     bincode::config::Fixint,
-// > = bincode::config::standard()
-//     .with_big_endian()
-//     .with_fixed_int_encoding();
 
 #[tokio::main]
 async fn main() {
@@ -100,12 +105,12 @@ async fn run() -> crate::Result<()> {
     //     Err(_) => None,
     // };
 
-    let db = db::init("tedbot.sled")?;
+    let db = db::init("tedbot_db")?;
 
     let mut client = Client::builder(token)
         .event_handler(handler::Handler { db })
         .application_id(app_id)
-        .intents(GatewayIntents::GUILD_MESSAGES)
+        .intents(crate::INTENTS)
         .await?;
     client.start_autosharded().await?;
 

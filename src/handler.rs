@@ -1,23 +1,33 @@
 //! Event handlers.
 
+use std::collections::HashSet;
 use std::env;
+use std::str::FromStr;
 use std::sync::Arc;
 
+use chrono::{DateTime, TimeZone, Utc};
 use serenity::async_trait;
 use serenity::client::{Context, EventHandler};
-use serenity::model::channel::Message;
+use serenity::futures::StreamExt;
+use serenity::model::channel::{Message, ReactionType};
 use serenity::model::gateway::{Activity, Ready};
 use serenity::model::guild;
 #[allow(deprecated)]
 use serenity::model::guild::GuildStatus;
-use serenity::model::interactions::application_command::ApplicationCommandInteraction;
+use serenity::model::interactions::application_command::{
+    ApplicationCommandInteraction, ApplicationCommandInteractionDataOption,
+    ApplicationCommandInteractionDataOptionValue,
+};
 use serenity::model::interactions::{Interaction, InteractionResponseType};
-use serenity::model::oauth2::OAuth2Scope;
-use serenity::model::Permissions;
 use serenity::prelude::*;
 
+use crate::codec;
 use crate::util::TraceResult;
-// use crate::wordle;
+use crate::wordle::{self, TimestampedScore};
+
+lazy_static::lazy_static! {
+    static ref WORDLE_1: DateTime<Utc> = Utc.ymd(2021, 6, 20).and_hms(0, 0, 0);
+}
 
 pub struct Handler {
     pub db: sled::Db,
@@ -28,34 +38,106 @@ impl TypeMapKey for BotName {
     type Value = Arc<str>;
 }
 
+impl Handler {
+    #[tracing::instrument(skip_all)]
+    async fn wordle_load(&self, ctx: &Context, cmd: ApplicationCommandInteraction) {
+        let channel_id = match cmd.data.options.get(0) {
+            Some(ApplicationCommandInteractionDataOption {
+                resolved: Some(ApplicationCommandInteractionDataOptionValue::Channel(partial)),
+                ..
+            }) => partial.id,
+            _ => cmd.channel_id,
+        };
+
+        let mut unique_users: HashSet<u64> = HashSet::new();
+        let mut score_count = 0;
+
+        res_str(
+            ctx,
+            &cmd,
+            format!("Loading wordle scores from <#{}>...", channel_id),
+        )
+        .await;
+
+        let mut messages = channel_id.messages_iter(&ctx).boxed();
+        while let Some(Ok(msg)) = messages.next().await {
+            if msg.timestamp < *WORDLE_1 {
+                break;
+            }
+
+            if let Ok((_, score)) = wordle::parse(&msg.content) {
+                let author_id = codec::encode(msg.author.id.0).unwrap();
+                let day = codec::encode(score.day).unwrap();
+                let timestamp = msg.timestamp.timestamp();
+                let score = codec::encode(TimestampedScore { timestamp, score }).unwrap();
+                let tree = self.db.open_tree(author_id).unwrap();
+
+                match tree.get(&day).unwrap() {
+                    None => {
+                        tree.insert(day, score).unwrap();
+                        unique_users.insert(msg.author.id.0);
+                        score_count += 1;
+                    }
+                    Some(prev_slice) => {
+                        let (prev, _) = codec::decode::<TimestampedScore>(&prev_slice).unwrap();
+                        if timestamp < prev.timestamp {
+                            tree.insert(day, score).unwrap();
+                            unique_users.insert(msg.author.id.0);
+                            score_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        cmd.channel_id
+            .say(
+                &ctx.http,
+                if score_count == 0 {
+                    format!("No scores to add or update in <#{}>", channel_id)
+                } else {
+                    format!(
+                        "Loaded {} scores from {} users in <#{}>",
+                        score_count,
+                        unique_users.len(),
+                        channel_id
+                    )
+                },
+            )
+            .await
+            .unwrap();
+    }
+}
+
 #[async_trait]
 impl EventHandler for Handler {
     #[tracing::instrument(skip_all)]
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::ApplicationCommand(cmd) = interaction {
             match cmd.data.name.as_str() {
-                "ping" => res_str(&ctx, cmd, "pong").await,
-                "order-up" => res_str(&ctx, cmd, "<:galleyboy:915674675684712509>").await,
-                "thank" => res_str(&ctx, cmd, "you're welcome").await,
-                "wordle-init" => wordle_init(&ctx, cmd).await,
-                _ => res_str(&ctx, cmd, "unimplemented").await,
+                "order-up" => res_str(&ctx, &cmd, "<:galleyboy:915674675684712509>").await,
+                "thank" => res_str(&ctx, &cmd, "you're welcome").await,
+                "wordle-load" => self.wordle_load(&ctx, cmd).await,
+                // "wordle" => wordle(&ctx, cmd).await,
+                _ => res_str(&ctx, &cmd, "unimplemented").await,
             }
         }
     }
 
     #[tracing::instrument(skip_all)]
-    async fn message(&self, _ctx: Context, msg: Message) {
+    async fn message(&self, ctx: Context, msg: Message) {
+        if let Ok((_, _score)) = wordle::parse(&msg.content) {
+            msg.react(
+                &ctx.http,
+                ReactionType::from_str("<:galleyboy:915674675684712509>").unwrap(),
+            )
+            .await
+            .trace_err();
+        }
+
         if msg.author.bot {
             return;
         }
-
-        // if let Ok((_, score)) = wordle::parse(&msg.content) {
-        //     msg.channel_id
-        //         .say(&ctx.http, format!("```rust\n{:#?}\n```", score))
-        //         .await
-        //         .trace_err();
-        //     return;
-        // }
     }
 
     #[allow(deprecated)]
@@ -86,15 +168,6 @@ impl EventHandler for Handler {
             crate::commands::register_guild(&ctx, guild_id).await;
         }
 
-        // Global slash command.
-        // ApplicationCommand::create_global_application_command(&ctx.http, |command| {
-        //     command
-        //         .name("tedbot_global")
-        //         .description("Does stuff")
-        // })
-        // .await
-        // .trace_err();
-
         set_activity(&ctx).await;
         ctx.online().await;
     }
@@ -103,13 +176,9 @@ impl EventHandler for Handler {
 /// Generate an invite URL to add the bot to servers.
 #[tracing::instrument(skip_all)]
 async fn invite_url(ctx: &Context, ready: &Ready) {
-    let permissions =
-        Permissions::READ_MESSAGES | Permissions::READ_MESSAGE_HISTORY | Permissions::SEND_MESSAGES;
-    let scopes = &[OAuth2Scope::Bot, OAuth2Scope::ApplicationsCommands];
-
     if let Ok(url) = ready
         .user
-        .invite_url_with_oauth2_scopes(&ctx.http, permissions, scopes)
+        .invite_url_with_oauth2_scopes(&ctx.http, *crate::PERMISSIONS, crate::SCOPES)
         .await
     {
         tracing::info!("{}", url);
@@ -160,7 +229,10 @@ async fn set_activity(ctx: &Context) {
 }
 
 #[tracing::instrument(skip_all)]
-async fn res_str(ctx: &Context, cmd: ApplicationCommandInteraction, content: &str) {
+async fn res_str<T>(ctx: &Context, cmd: &ApplicationCommandInteraction, content: T)
+where
+    T: ToString + Send,
+{
     cmd.create_interaction_response(&ctx.http, |res| {
         res.kind(InteractionResponseType::ChannelMessageWithSource)
             .interaction_response_data(|msg| msg.content(content))
@@ -168,5 +240,3 @@ async fn res_str(ctx: &Context, cmd: ApplicationCommandInteraction, content: &st
     .await
     .trace_err();
 }
-
-async fn wordle_init(ctx: &Context, cmd: ApplicationCommandInteraction) {}

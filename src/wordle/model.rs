@@ -1,6 +1,12 @@
 //! Wordle score model.
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, bincode::Encode, bincode::Decode)]
+#[derive(Debug, bincode::Encode, bincode::Decode)]
+pub struct TimestampedScore {
+    pub timestamp: i64,
+    pub score: Score,
+}
+
+#[derive(Debug, PartialEq, PartialOrd, bincode::Encode, bincode::Decode)]
 pub struct Score {
     pub day: u32,
     pub success: bool,
@@ -9,9 +15,11 @@ pub struct Score {
     pub grid: Grid,
 }
 
+// Uses `Vec`s to simplify parsing.
+// FIX: https://docs.rs/nom/*/nom/multi/fn.fill.html
 pub type Grid = Vec<Vec<Letter>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, bincode::Encode, bincode::Decode)]
+#[derive(Debug, PartialEq, PartialOrd, bincode::Encode, bincode::Decode)]
 pub enum Letter {
     Correct,
     Partial,

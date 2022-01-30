@@ -8,12 +8,12 @@ use crate::handler::BotName;
 use crate::util::TraceResult;
 
 /// Register a command with a guild.
-#[tracing::instrument(skip_all)]
+// #[tracing::instrument(skip_all)]
 pub async fn register_guild(ctx: &Context, guild_id: GuildId) {
     let name = {
         let lock = ctx.data.read().await;
         lock.get::<BotName>()
-            .expect("Expected bot name in TypeMap")
+            .expect("Expected BotName in TypeMap")
             .clone()
     };
 
@@ -21,10 +21,8 @@ pub async fn register_guild(ctx: &Context, guild_id: GuildId) {
         .set_application_commands(&ctx.http, |commands| {
             commands
                 .create_application_command(|cmd| {
-                    cmd.name("ping").description("\"pong\"")
-                })
-                .create_application_command(|cmd| {
-                    cmd.name("order-up").description("There's a fresh galley boy waiting for you")
+                    cmd.name("order-up")
+                        .description("There's a fresh galley boy waiting for you")
                 })
                 .create_application_command(|cmd| {
                     cmd.name("thank").description(format!("Thank {}", name))
@@ -32,29 +30,30 @@ pub async fn register_guild(ctx: &Context, guild_id: GuildId) {
                 .create_application_command(|cmd| {
                     cmd.name("wordle")
                         .description("Show wordle stats")
-                        .default_permission(false)
                         .create_option(|opt| {
                             opt.name("user")
-                                .description("Stats for a specific user")
+                                .description("Select a specific user")
                                 .kind(ApplicationCommandOptionType::User)
+                        })
+                        .create_option(|opt| {
+                            opt.name("day")
+                                .description("Select a day (e.g. 123 or 1/1/2021)")
+                                .kind(ApplicationCommandOptionType::String)
+                        })
+                        .create_option(|opt| {
+                            opt.name("hard")
+                                .description("Select hard mode scores")
+                                .kind(ApplicationCommandOptionType::Boolean)
                         })
                 })
                 .create_application_command(|cmd| {
-                    cmd.name("wordle-init")
-                        .description("Initialize wordle score tracking; loads previous messages containing wordle scores")
-                        .default_permission(false)
+                    cmd.name("wordle-load")
+                        .description("Load wordle scores from the current channel")
                         .create_option(|opt| {
-                                opt.name("channel")
-                                    .description("The channel to watch")
-                                    .kind(ApplicationCommandOptionType::Channel)
-                                    .required(true)
-                            })
-                    })
-                .create_application_command(|cmd| {
-                    cmd.name("wordle-uninit")
-                        .description("Remove wordle score tracking from the server")
-                        .default_permission(false)
-                    // TODO
+                            opt.name("channel")
+                                .description("Specify a different channel to load scores from")
+                                .kind(ApplicationCommandOptionType::Channel)
+                        })
                 })
         })
         .await

@@ -1,6 +1,6 @@
 //! Wordle score result parser.
 
-// TODO: Check message day is ±1
+// TODO: Check message day is +-1
 
 use nom::bytes::complete::tag;
 use nom::character::complete::{char, digit1, line_ending, multispace1, one_of, satisfy, space1};
@@ -11,6 +11,7 @@ use nom::IResult;
 
 use super::model::{Grid, Letter, Score};
 
+#[tracing::instrument(skip_all)]
 pub fn parse(input: &str) -> IResult<&str, Score> {
     let (input, (day, success, tries, hard_mode)) = header(input)?;
     let (input, grid) = grid(input, tries)?;
@@ -45,6 +46,7 @@ fn header(input: &str) -> IResult<&str, (u32, bool, u8, bool)> {
 fn grid(input: &str, tries: u8) -> IResult<&str, Grid> {
     let letter = map(one_of("\u{1f7e9}\u{1f7e8}\u{2b1b}\u{2b1c}"), letter);
     let row = terminated(count(letter, 5), opt(line_ending));
+
     let (input, grid) = count(row, usize::from(tries))(input)?;
 
     Ok((input, grid))
@@ -80,12 +82,12 @@ mod test {
     fn wordle_loss() {
         let input = "Wordle 213 X/6
 
-⬜⬜⬜⬜🟨
-⬜⬜🟨⬜🟨
-🟩🟩🟩⬜⬜
-🟩🟩🟩⬜⬜
-🟩🟩🟩⬜⬜
-🟩🟩🟩⬜⬜
+\u{2b1c}\u{2b1c}\u{2b1c}\u{2b1c}\u{1f7e8}
+\u{2b1c}\u{2b1c}\u{1f7e8}\u{2b1c}\u{1f7e8}
+\u{1f7e9}\u{1f7e9}\u{1f7e9}\u{2b1c}\u{2b1c}
+\u{1f7e9}\u{1f7e9}\u{1f7e9}\u{2b1c}\u{2b1c}
+\u{1f7e9}\u{1f7e9}\u{1f7e9}\u{2b1c}\u{2b1c}
+\u{1f7e9}\u{1f7e9}\u{1f7e9}\u{2b1c}\u{2b1c}
 this was a hard one";
         let output = parse(input);
         let expected = Ok((
@@ -112,10 +114,10 @@ this was a hard one";
     #[test]
     fn wordle_win_hard_mode() {
         let input = "Wordle 224 4/6*
-⬛⬛⬛⬛⬛
-⬛🟨⬛🟨⬛
-🟩🟨🟩⬛⬛
-🟩🟩🟩🟩🟩";
+\u{2b1b}\u{2b1b}\u{2b1b}\u{2b1b}\u{2b1b}
+\u{2b1b}\u{1f7e8}\u{2b1b}\u{1f7e8}\u{2b1b}
+\u{1f7e9}\u{1f7e8}\u{1f7e9}\u{2b1b}\u{2b1b}
+\u{1f7e9}\u{1f7e9}\u{1f7e9}\u{1f7e9}\u{1f7e9}";
         let output = parse(input);
         let expected = Ok((
             "",

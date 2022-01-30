@@ -1,7 +1,7 @@
 //! Wordle leaderboard.
 
 mod model;
-#[allow(dead_code)] // TODO
 mod parser;
 
+pub use model::*;
 pub use parser::parse;
