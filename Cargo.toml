@@ -30,7 +30,7 @@ features = ["cache", "client", "gateway", "rustls_backend", "model", "unstable_d
 [dependencies.tokio]
 version = "1.16.1"
 default-features = false
-features = ["rt-multi-thread", "macros", "parking_lot"]
+features = ["rt-multi-thread", "macros", "signal", "parking_lot"]
 
 [dependencies.tracing-subscriber]
 version = "0.3.7"

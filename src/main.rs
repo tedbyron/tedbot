@@ -115,6 +115,15 @@ async fn run() -> crate::Result<()> {
         .application_id(app_id)
         .intents(crate::INTENTS)
         .await?;
+    let shard_manager = client.shard_manager.clone();
+
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Could not register ctrl+c handler");
+        shard_manager.lock().await.shutdown_all().await;
+    });
+
     client.start_autosharded().await?;
 
     Ok(())
