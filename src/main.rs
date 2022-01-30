@@ -31,7 +31,10 @@ const SCOPES: &[OAuth2Scope] = &[OAuth2Scope::Bot, OAuth2Scope::ApplicationsComm
 
 lazy_static::lazy_static! {
     static ref PERMISSIONS: Permissions =
-    Permissions::READ_MESSAGES | Permissions::READ_MESSAGE_HISTORY | Permissions::SEND_MESSAGES | Permissions::ADD_REACTIONS;
+        Permissions::READ_MESSAGES
+        | Permissions::READ_MESSAGE_HISTORY
+        | Permissions::SEND_MESSAGES
+        | Permissions::ADD_REACTIONS;
 }
 
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -105,7 +108,7 @@ async fn run() -> crate::Result<()> {
     //     Err(_) => None,
     // };
 
-    let db = db::init("tedbot_db")?;
+    let db = db::open("tedbot_db")?;
 
     let mut client = Client::builder(token)
         .event_handler(handler::Handler { db })

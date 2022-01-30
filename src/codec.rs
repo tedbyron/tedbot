@@ -20,9 +20,10 @@ where
 }
 
 #[tracing::instrument(skip_all)]
-pub fn decode<'a, D>(src: &'a [u8]) -> Result<(D, usize), DecodeError>
+pub fn decode<'a, D>(src: &'a [u8]) -> Result<D, DecodeError>
 where
     D: de::BorrowDecode<'a>,
 {
-    bincode::decode_from_slice::<D, Config>(src, CONFIG)
+    let (res, _) = bincode::decode_from_slice::<D, Config>(src, CONFIG)?;
+    Ok(res)
 }

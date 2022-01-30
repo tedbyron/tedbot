@@ -25,7 +25,7 @@ pub async fn register_guild(ctx: &Context, guild_id: GuildId) {
                         .description("There's a fresh galley boy waiting for you")
                 })
                 .create_application_command(|cmd| {
-                    cmd.name("thank").description(format!("Thank {}", name))
+                    cmd.name("thank").description(format!("Thank {name}"))
                 })
                 .create_application_command(|cmd| {
                     cmd.name("wordle")
@@ -57,5 +57,5 @@ pub async fn register_guild(ctx: &Context, guild_id: GuildId) {
                 })
         })
         .await
-        .trace_err();
+        .or_trace();
 }

@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::env;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::{DateTime, TimeZone, Utc};
 use serenity::async_trait;
@@ -23,10 +24,10 @@ use serenity::prelude::*;
 
 use crate::codec;
 use crate::util::TraceResult;
-use crate::wordle;
+use crate::wordle::{self, TimestampedScore};
 
 lazy_static::lazy_static! {
-    static ref WORDLE_1: DateTime<Utc> = Utc.ymd(2021, 6, 20).and_hms(0, 0, 0);
+    static ref WORDLE_N1: DateTime<Utc> = Utc.ymd(2021, 6, 19).and_hms(0, 0, 0);
 }
 
 pub struct Handler {
@@ -43,7 +44,7 @@ impl Handler {
     async fn wordle_load(
         &self,
         ctx: &Context,
-        cmd: ApplicationCommandInteraction,
+        cmd: &ApplicationCommandInteraction,
     ) -> crate::Result<()> {
         let channel_id = match cmd.data.options.get(0) {
             Some(ApplicationCommandInteractionDataOption {
@@ -55,19 +56,24 @@ impl Handler {
 
         let mut unique_users: HashSet<u64> = HashSet::new();
         let mut score_count = 0;
+        let mut msg_count = 0;
 
         res_str(
             ctx,
-            &cmd,
-            format!("Loading wordle scores from <#{}>...", channel_id),
+            cmd,
+            format!("Loading wordle scores from <#{channel_id}>..."),
         )
         .await;
 
+        let timer = Instant::now();
+
         let mut messages = channel_id.messages_iter(&ctx).boxed();
         while let Some(Ok(msg)) = messages.next().await {
-            if msg.timestamp < *WORDLE_1 {
+            if msg.timestamp < *WORDLE_N1 {
                 break;
             }
+
+            msg_count += 1;
 
             if let Ok((_, score)) = wordle::parse(&msg.content) {
                 let author_id = codec::encode(msg.author.id.0)?;
@@ -83,7 +89,7 @@ impl Handler {
                         score_count += 1;
                     }
                     Some(prev_slice) => {
-                        let (prev, _) = codec::decode::<wordle::TimestampedScore>(&prev_slice)?;
+                        let prev = codec::decode::<wordle::TimestampedScore>(&prev_slice)?;
                         if timestamp < prev.timestamp {
                             tree.insert(day, score)?;
                             unique_users.insert(msg.author.id.0);
@@ -94,17 +100,25 @@ impl Handler {
             }
         }
 
+        self.db.flush_async().await?;
+
+        let timer_duration = timer.elapsed().as_secs();
+        let timer_minutes = timer_duration / 60;
+        let timer_seconds = timer_duration % 60;
+
         cmd.channel_id
             .say(
                 &ctx.http,
                 if score_count == 0 {
-                    format!("No scores to add or update in <#{}>", channel_id)
+                    format!(
+                        "{msg_count} messages parsed in {timer_minutes}m {timer_seconds}s
+No scores to add or update from <#{channel_id}>"
+                    )
                 } else {
                     format!(
-                        "Loaded {} scores from {} users in <#{}>",
-                        score_count,
-                        unique_users.len(),
-                        channel_id
+                        "{msg_count} messages parsed in {timer_minutes}m {timer_seconds}s
+Loaded {score_count} scores from {num_users} users from <#{channel_id}>",
+                        num_users = unique_users.len(),
                     )
                 },
             )
@@ -121,17 +135,96 @@ impl Handler {
         let score = codec::encode(wordle::TimestampedScore { timestamp, score })?;
         let tree = self.db.open_tree(author_id)?;
 
-        match tree.get(&day)? {
-            None => {
-                tree.insert(day, score)?;
-            }
-            Some(prev_slice) => {
-                let (prev, _) = codec::decode::<wordle::TimestampedScore>(&prev_slice)?;
-                if timestamp < prev.timestamp {
-                    tree.insert(day, score)?;
+        if !tree.contains_key(&day)? {
+            tree.insert(day, score)?;
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
+    #[tracing::instrument(skip_all)]
+    async fn wordle_stats(
+        &self,
+        ctx: &Context,
+        cmd: &ApplicationCommandInteraction,
+    ) -> crate::Result<()> {
+        let user = match cmd.data.options.iter().find(|&opt| opt.name == "user") {
+            Some(ApplicationCommandInteractionDataOption {
+                resolved: Some(ApplicationCommandInteractionDataOptionValue::User(user, _)),
+                ..
+            }) => user,
+            _ => &cmd.user,
+        };
+
+        let tree = self.db.open_tree(codec::encode(user.id.0)?)?;
+
+        if tree.is_empty() {
+            res_str(
+                ctx,
+                cmd,
+                format!("No scores found for {username}", username = user.name),
+            )
+            .await;
+            return Ok(());
+        }
+
+        let day = cmd
+            .data
+            .options
+            .iter()
+            .find(|&opt| opt.name == "day")
+            .and_then(|opt| {
+                if let Some(ApplicationCommandInteractionDataOptionValue::String(ref day)) =
+                    opt.resolved
+                {
+                    Some(day)
+                } else {
+                    None
                 }
+            });
+
+        let hard = match cmd.data.options.iter().find(|&opt| opt.name == "hard") {
+            Some(ApplicationCommandInteractionDataOption {
+                resolved: Some(ApplicationCommandInteractionDataOptionValue::Boolean(hard)),
+                ..
+            }) => *hard,
+            _ => false,
+        };
+
+        let mut success_count = 0;
+        let tries_count = tree.len() as f64;
+        let mut tries_total = 0.0;
+        let mut hard_count = 0;
+
+        let mut tree_iter = tree.iter();
+        while let Some(Ok((_, val))) = tree_iter.next() {
+            let TimestampedScore { score, .. } = codec::decode::<TimestampedScore>(&val)?;
+            if score.success {
+                success_count += 1;
+            }
+            tries_total += score.tries as f64;
+            if score.hard_mode {
+                hard_count += 1;
             }
         }
+
+        res_str(
+            ctx,
+            cmd,
+            format!(
+                "```
+user:           {username}
+days_played:    {tries_count}
+days_success:   {success_count}
+avg_tries:      {avg_tries:.2}
+hard_mode_days: {hard_count}
+```",
+                username = user.name,
+                avg_tries = tries_total / tries_count
+            ),
+        )
+        .await;
 
         Ok(())
     }
@@ -144,10 +237,18 @@ impl EventHandler for Handler {
         if let Interaction::ApplicationCommand(cmd) = interaction {
             match cmd.data.name.as_str() {
                 "order-up" => res_str(&ctx, &cmd, "<:galleyboy:915674675684712509>").await,
-                "thank" => res_str(&ctx, &cmd, "you're welcome").await,
-                "wordle-load" => self.wordle_load(&ctx, cmd).await.trace_err(),
-                // "wordle" => wordle(&ctx, cmd).await,
-                _ => res_str(&ctx, &cmd, "unimplemented").await,
+                "thank" => res_str(&ctx, &cmd, "You're welcome").await,
+                "wordle-load" => {
+                    if self.wordle_load(&ctx, &cmd).await.trace_err().is_err() {
+                        say_err(&ctx, &cmd).await;
+                    }
+                }
+                "wordle" => {
+                    if self.wordle_stats(&ctx, &cmd).await.trace_err().is_err() {
+                        say_err(&ctx, &cmd).await;
+                    }
+                }
+                _ => res_str(&ctx, &cmd, "Unimplemented").await,
             }
         }
     }
@@ -162,9 +263,9 @@ impl EventHandler for Handler {
                         ReactionType::from_str("<:galleyboy:915674675684712509>").unwrap(),
                     )
                     .await
-                    .trace_err();
+                    .or_trace();
                 }
-                err @ Err(_) => err.trace_err(),
+                err @ Err(_) => err.or_trace(),
             }
         }
 
@@ -271,5 +372,12 @@ where
             .interaction_response_data(|msg| msg.content(content))
     })
     .await
-    .trace_err();
+    .or_trace();
+}
+
+async fn say_err(ctx: &Context, cmd: &ApplicationCommandInteraction) {
+    cmd.channel_id
+        .say(&ctx.http, "Oops, there was an error \u{1f615}")
+        .await
+        .or_trace();
 }
