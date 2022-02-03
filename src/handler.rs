@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use serenity::async_trait;
 use serenity::client::{Context, EventHandler};
 use serenity::futures::StreamExt;
@@ -25,10 +25,6 @@ use serenity::prelude::*;
 use crate::codec;
 use crate::util::TraceResult;
 use crate::wordle::{self, TimestampedScore};
-
-lazy_static::lazy_static! {
-    static ref WORDLE_N1: DateTime<Utc> = Utc.ymd(2021, 6, 19).and_hms(0, 0, 0);
-}
 
 pub struct Handler {
     pub db: sled::Db,
@@ -68,20 +64,28 @@ impl Handler {
         let timer = Instant::now();
 
         let mut messages = channel_id.messages_iter(&ctx).boxed();
-        while let Some(Ok(msg)) = messages.next().await {
-            if msg.timestamp < *WORDLE_N1 {
-                break;
+        'messages_iter: while let Some(Ok(msg)) = messages.next().await {
+            if msg.timestamp < *crate::WORDLE_DAY1 {
+                break 'messages_iter;
             }
 
             msg_count += 1;
 
             if let Ok((_, score)) = wordle::parse(&msg.content) {
-                let author_id = codec::encode(msg.author.id.0)?;
-                let day = codec::encode(score.day)?;
+                // Check that the message date is +-1 day from the wordle day.
                 let timestamp = msg.timestamp.timestamp();
+                if !wordle_day_ok(score.day, timestamp) {
+                    continue 'messages_iter;
+                }
+
+                // Encode data for storage.
+                let day = codec::encode(score.day)?;
+                let author_id = codec::encode(msg.author.id.0)?;
                 let score = codec::encode(wordle::TimestampedScore { timestamp, score })?;
                 let tree = self.db.open_tree(author_id)?;
 
+                // If a score for a day already exists in the db, compare
+                // message timestamps and use the earlier message.
                 match tree.get(&day)? {
                     None => {
                         tree.insert(day, score)?;
@@ -102,6 +106,7 @@ impl Handler {
 
         self.db.flush_async().await?;
 
+        let user_count = unique_users.len();
         let timer_duration = timer.elapsed().as_secs();
         let timer_minutes = timer_duration / 60;
         let timer_seconds = timer_duration % 60;
@@ -117,8 +122,10 @@ No scores to add or update from <#{channel_id}>"
                 } else {
                     format!(
                         "Parsed {msg_count} messages in {timer_minutes}m {timer_seconds}s
-Loaded {score_count} scores from {num_users} users from <#{channel_id}>",
-                        num_users = unique_users.len(),
+Loaded {score_count} score{scores_plural} from {num_users} user{users_plural} from <#{channel_id}>",
+                        scores_plural = if score_count == 1 { "" } else { "s" },
+                        num_users = user_count,
+                        users_plural = if user_count == 1 { "" } else { "s" }
                     )
                 },
             )
@@ -231,6 +238,13 @@ Hard Mode Days:  {hard_count}
     }
 }
 
+fn wordle_day_ok(day: u32, msg_timestamp: i64) -> bool {
+    let score_datetime = wordle::day_to_datetime(day);
+    let msg_datetime = Utc.timestamp(msg_timestamp, 0);
+    !(score_datetime < msg_datetime - Duration::days(1)
+        || score_datetime > msg_datetime + Duration::days(1))
+}
+
 #[async_trait]
 impl EventHandler for Handler {
     #[tracing::instrument(skip_all)]
@@ -257,6 +271,12 @@ impl EventHandler for Handler {
     #[tracing::instrument(skip_all)]
     async fn message(&self, ctx: Context, msg: Message) {
         if let Ok((_, score)) = wordle::parse(&msg.content) {
+            // Check that the message date is +-1 day from the wordle day.
+            let timestamp = msg.timestamp.timestamp();
+            if !wordle_day_ok(score.day, timestamp) {
+                return;
+            }
+
             match self.insert_wordle_score(&msg, score) {
                 Ok(_) => {
                     msg.react(

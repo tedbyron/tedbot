@@ -20,6 +20,7 @@ mod wordle;
 use std::env;
 use std::process;
 
+use chrono::{DateTime, TimeZone, Utc};
 use serenity::client::bridge::gateway::GatewayIntents;
 use serenity::client::{self, Client};
 use serenity::model::oauth2::OAuth2Scope;
@@ -35,6 +36,8 @@ lazy_static::lazy_static! {
         | Permissions::READ_MESSAGE_HISTORY
         | Permissions::SEND_MESSAGES
         | Permissions::ADD_REACTIONS;
+
+    static ref WORDLE_DAY1: DateTime<Utc> = Utc.ymd(2021, 6, 19).and_hms(0, 0, 0);
 }
 
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;

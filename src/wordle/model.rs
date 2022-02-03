@@ -1,5 +1,7 @@
 //! Wordle score model.
 
+use chrono::{DateTime, Duration, Utc};
+
 #[derive(Debug, bincode::Encode, bincode::Decode)]
 pub struct TimestampedScore {
     pub timestamp: i64,
@@ -24,4 +26,8 @@ pub enum Letter {
     Correct,
     Partial,
     Incorrect,
+}
+
+pub fn day_to_datetime(day: u32) -> DateTime<Utc> {
+    *crate::WORDLE_DAY1 + Duration::days(i64::from(day - 1))
 }
