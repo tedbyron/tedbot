@@ -10,36 +10,6 @@ readme = "README.md"
 keywords = ["discord", "bot"]
 publish = false
 
-[features]
-default = []
-
-[dependencies]
-bincode = "2.0.0-beta.2"
-dotenv = { version = "0.15.0", optional = true }
-lazy_static = "1.4.0"
-nom = "7.1.0"
-sled = { version = "0.34.7", features = ["compression"] }
-tracing = "0.1.29"
-chrono = "0.4.19"
-
-[dependencies.serenity]
-version = "0.10.10"
-default-features = false
-features = ["cache", "client", "gateway", "rustls_backend", "model", "unstable_discord_api"]
-
-[dependencies.tokio]
-version = "1.16.1"
-default-features = false
-features = ["rt-multi-thread", "macros", "signal", "parking_lot"]
-
-[dependencies.tracing-subscriber]
-version = "0.3.7"
-default-features = false
-features = ["std", "env-filter", "fmt", "ansi", "smallvec", "parking_lot"]
-
-[dev-dependencies]
-wiremock = "0.5.10"
-
 [profile.dev]
 debug = 0
 
@@ -48,3 +18,18 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 # strip = "symbols"
+
+[features]
+default = []
+
+[dependencies]
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+poise = "0.5.1"
+anyhow = "1.0.66"
+dotenvy = "0.15.6"
+
+[dependencies.tokio]
+version = "1.23.0"
+default-features = false
+features = ["rt-multi-thread", "macros", "signal", "parking_lot"]

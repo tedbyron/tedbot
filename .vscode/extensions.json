@@ -1,6 +1,3 @@
 {
-  "recommendations": [
-    "tamasfe.even-better-toml",
-    "matklad.rust-analyzer"
-  ]
+  "recommendations": ["tamasfe.even-better-toml", "rust-lang.rust-analyzer"]
 }

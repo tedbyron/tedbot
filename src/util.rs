@@ -1,4 +1,4 @@
-//! Utility items.
+use tracing::error;
 
 pub trait TraceResult {
     fn or_trace(self);
@@ -11,13 +11,13 @@ where
 {
     fn or_trace(self) {
         if let Err(ref e) = self {
-            tracing::error!("{:?}", e);
+            error!("{:?}", e);
         }
     }
 
     fn trace_err(self) -> Self {
         if let Err(ref e) = self {
-            tracing::error!("{:?}", e);
+            error!("{:?}", e);
         }
 
         self

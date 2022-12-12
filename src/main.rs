@@ -1,133 +1,91 @@
-#![forbid(unsafe_code)]
-#![warn(
-    clippy::all,
-    clippy::pedantic,
-    clippy::nursery,
-    clippy::cargo,
-    rust_2018_idioms
-)]
-#![allow(clippy::unreadable_literal)]
+#![warn(clippy::all, clippy::cargo, rust_2018_idioms)]
 #![windows_subsystem = "console"]
 #![doc = include_str!("../README.md")]
 
-mod codec;
-mod commands;
-mod db;
-mod handler;
+mod handlers;
 mod util;
-mod wordle;
 
 use std::env;
 use std::process;
+use std::time::Duration;
 
-use chrono::{DateTime, TimeZone, Utc};
-use serenity::client::bridge::gateway::GatewayIntents;
-use serenity::client::{self, Client};
-use serenity::model::oauth2::OAuth2Scope;
-use serenity::model::Permissions;
-use tracing_subscriber::EnvFilter;
+use anyhow::{bail, Result};
+use poise::serenity_prelude::{validate_token, GatewayIntents};
+use poise::{EditTracker, PrefixFrameworkOptions};
+use tracing::{error, trace};
+use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
-const INTENTS: GatewayIntents = GatewayIntents::GUILD_MESSAGES;
-const SCOPES: &[OAuth2Scope] = &[OAuth2Scope::Bot, OAuth2Scope::ApplicationsCommands];
-
-lazy_static::lazy_static! {
-    static ref PERMISSIONS: Permissions =
-        Permissions::READ_MESSAGES
-        | Permissions::READ_MESSAGE_HISTORY
-        | Permissions::SEND_MESSAGES
-        | Permissions::ADD_REACTIONS;
-
-    static ref WORDLE_DAY1: DateTime<Utc> = Utc.ymd(2021, 6, 19).and_hms(0, 0, 0);
+#[derive(Debug, Clone)]
+pub struct Data {
+    tag: String,
 }
-
-type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
-type Result<T> = std::result::Result<T, Error>;
+pub type Context<'a> = poise::Context<'a, Data, Error>;
+pub type Error = anyhow::Error;
+pub type Framework = poise::Framework<Data, Error>;
+pub type FrameworkError<'a> = poise::FrameworkError<'a, Data, Error>;
+type FrameworkOptions = poise::FrameworkOptions<Data, Error>;
 
 #[tokio::main]
 async fn main() {
     process::exit(match run().await {
-        Ok(_) => 0,
+        Ok(()) => 0,
         Err(e) => {
-            tracing::error!("{:?}", e);
+            error!("{:?}", e);
             1
         }
     });
 }
 
-async fn run() -> crate::Result<()> {
-    // NOTE: Should only be used in development.
+async fn run() -> Result<()> {
     #[cfg(feature = "dotenv")]
-    dotenv::dotenv()?;
-
-    // Tracing level.
-    if env::var("TEDBOT_LOG").is_err() {
-        env::set_var("TEDBOT_LOG", "INFO");
-    };
+    dotenvy::dotenv()?;
 
     tracing_subscriber::fmt()
         .with_target(false)
-        .with_env_filter(EnvFilter::from_env("TEDBOT_LOG"))
+        .with_env_filter(EnvFilter::try_from_env("TEDBOT_LOG").unwrap_or_else(|_| {
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy()
+        }))
         .init();
 
-    // NOTE: Intersperse is not yet stable https://github.com/rust-lang/rust/issues/79524.
-    tracing::trace!(command = %env::args().collect::<Vec<_>>().join(" "));
+    // NOTE: https://github.com/rust-lang/rust/issues/79524.
+    trace!(command = %env::args().collect::<Vec<_>>().join(" "));
 
-    // Get and validate discord bot token from env vars.
     let token = match env::var("TEDBOT_TOKEN") {
-        Ok(token) => token,
-        Err(_) => return Err(Box::from("Missing TEDBOT_TOKEN env var")),
-    };
-    if client::validate_token(&token).is_err() {
-        return Err(Box::from("Invalid TEDBOT_TOKEN env var"));
+        Ok(token) => match validate_token(&token) {
+            Ok(()) => token,
+            Err(_) => bail!("Invalid TEDBOT_TOKEN env var"),
+        },
+        Err(_) => bail!("Missing TEDBOT_TOKEN env var"),
     };
     let app_id = match env::var("TEDBOT_APPLICATION_ID") {
         Ok(id) => match id.parse::<u64>() {
-            Ok(parsed) => parsed,
-            Err(_) => return Err(Box::from("INVALID TEDBOT_APPLICATION_ID env var")),
+            Ok(id) => id,
+            Err(_) => bail!("INVALID TEDBOT_APPLICATION_ID env var"),
         },
-        Err(_) => return Err(Box::from("Missing TEDBOT_APPLICATION_ID env var")),
+        Err(_) => bail!("Missing TEDBOT_APPLICATION_ID env var"),
     };
 
-    // TODO: Guild whitelist.
-    // let whitelist = match env::var("TEDBOT_WHITELIST") {
-    //     Ok(wl_string) => {
-    //         if wl_string.is_empty() {
-    //             None
-    //         } else {
-    //             let wl = wl_string
-    //                 .trim()
-    //                 .split(|c: char| !c.is_ascii_digit())
-    //                 .map(str::parse::<u64>)
-    //                 .filter_map(Result::ok)
-    //                 .map(GuildId::from)
-    //                 .collect::<Vec<_>>();
+    let options = FrameworkOptions {
+        commands: vec![],
+        on_error: |err| Box::pin(async move { error!(?err) }),
+        command_check: Some(|ctx| Box::pin(handlers::command_check(ctx))),
+        prefix_options: PrefixFrameworkOptions {
+            prefix: None,
+            edit_tracker: Some(EditTracker::for_timespan(Duration::from_secs(3600))),
+            ..PrefixFrameworkOptions::default()
+        },
+        ..FrameworkOptions::default()
+    };
 
-    //             if wl.is_empty() {
-    //                 tracing::warn!("Invalid TEDBOT_WHITELIST env var, ignoring");
-    //             }
-    //             Some(wl)
-    //         }
-    //     }
-    //     Err(_) => None,
-    // };
-
-    let db = db::open("tedbot_db")?;
-
-    let mut client = Client::builder(token)
-        .event_handler(handler::Handler { db })
-        .application_id(app_id)
-        .intents(crate::INTENTS)
+    Framework::builder()
+        .token(token)
+        .setup(|c, r, f| Box::pin(handlers::setup(c, r, f)))
+        .options(options)
+        .intents(GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT)
+        .run_autosharded()
         .await?;
-    let shard_manager = client.shard_manager.clone();
-
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Could not register ctrl+c handler");
-        shard_manager.lock().await.shutdown_all().await;
-    });
-
-    client.start_autosharded().await?;
 
     Ok(())
 }
