@@ -1,2 +1,2 @@
 [alias]
-w = ["watch", "--features", "dotenv", "-x", "run"]
+w = "watch --features dotenv -x run"
