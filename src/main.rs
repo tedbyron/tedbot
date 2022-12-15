@@ -9,11 +9,10 @@ use poise::builtins::register_globally;
 use poise::serenity_prelude::oauth::Scope;
 use poise::serenity_prelude::{self as serenity, Activity, GatewayIntents, Permissions};
 use poise::{EditTracker, FrameworkOptions, PrefixFrameworkOptions};
-use tracing::{error, info, trace, warn};
-use tracing_subscriber::filter::{EnvFilter, LevelFilter};
+use tracing::{error, info, warn};
+use tracing_subscriber::filter::EnvFilter;
 
 mod commands;
-mod util;
 
 #[derive(Debug, Clone)]
 pub struct Data {}
@@ -38,15 +37,8 @@ async fn run() -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_target(false)
-        .with_env_filter(EnvFilter::try_from_env("TEDBOT_LOG").unwrap_or_else(|_| {
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy()
-        }))
+        .with_env_filter(EnvFilter::from_env("TEDBOT_LOG"))
         .init();
-
-    // NOTE: https://github.com/rust-lang/rust/issues/79524.
-    trace!(command = %env::args().collect::<Vec<_>>().join(" "));
 
     let token = match env::var("TEDBOT_TOKEN") {
         Ok(token) => token,
@@ -58,7 +50,12 @@ async fn run() -> Result<()> {
         ..PrefixFrameworkOptions::default()
     };
     let options = FrameworkOptions {
-        commands: vec![commands::ping(), commands::order(), commands::survey()],
+        commands: vec![
+            commands::ping(),
+            commands::order(),
+            commands::poll(),
+            commands::multipoll(),
+        ],
         on_error: move |e| Box::pin(on_error(e)),
         pre_command: move |ctx| Box::pin(pre_command(ctx)),
         command_check: Some(move |ctx| Box::pin(command_check(ctx))),
@@ -103,6 +100,10 @@ async fn on_error(err: FrameworkError<'_>) {
 }
 
 #[tracing::instrument(skip_all)]
+async fn pre_command(ctx: Context<'_>) {
+    info!("{} used `{}`", ctx.author().tag(), ctx.invocation_string());
+}
+
 async fn command_check(ctx: Context<'_>) -> Result<bool> {
     Ok(!ctx.author().bot)
 }
@@ -172,14 +173,7 @@ async fn activity_from_env(ctx: &serenity::Context) {
     if let Some(activity) = activity {
         info!("{:?} {}", &activity.kind, &activity.name);
         ctx.set_activity(activity).await;
+    } else {
+        info!("No complete activity declared");
     }
-}
-
-#[tracing::instrument(skip_all)]
-async fn pre_command(ctx: Context<'_>) {
-    info!(
-        "{} used command `{}`",
-        ctx.author().tag(),
-        ctx.invocation_string()
-    );
 }

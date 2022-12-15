@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use poise::futures_util::StreamExt;
-use poise::serenity_prelude::InteractionResponseType;
+use poise::serenity_prelude::{Color, InteractionResponseType};
 use poise::{command, ChoiceParameter};
 use rand::Rng;
 
@@ -44,30 +44,30 @@ pub async fn order(ctx: Context<'_>, #[description = "Menu item"] item: OrderIte
     Ok(())
 }
 
-/// Create a survey
+/// Create a poll
 #[command(slash_command)]
-pub async fn survey(
+pub async fn poll(
     ctx: Context<'_>,
-    #[description = "Survey title"] title: String,
-    #[description = "Survey duration in seconds (default: 1h)"] duration: Option<u64>,
+    #[description = "Poll title"] title: String,
+    #[description = "Poll duration in seconds (default: 1h)"] duration: Option<u64>,
     #[description = "Comma separated answers"] answers: String,
 ) -> Result<()> {
-    _survey(ctx, title, duration, None, answers).await
+    _poll(ctx, title, duration, None, answers).await
 }
 
-/// Create a survey that accepts multiple responses
+/// Create a poll that accepts multiple responses
 #[command(slash_command)]
-pub async fn multisurvey(
+pub async fn multipoll(
     ctx: Context<'_>,
-    #[description = "Survey title"] title: String,
-    #[description = "Survey duration in seconds (default: 1h)"] duration: Option<u64>,
+    #[description = "Poll title"] title: String,
+    #[description = "Poll duration in seconds (default: 1h)"] duration: Option<u64>,
     #[description = "Maximum number of selected answers"] max: u64,
     #[description = "Comma separated answers"] answers: String,
 ) -> Result<()> {
-    _survey(ctx, title, duration, Some(max), answers).await
+    _poll(ctx, title, duration, Some(max), answers).await
 }
 
-async fn _survey(
+async fn _poll(
     ctx: Context<'_>,
     title: String,
     duration: Option<u64>,
@@ -75,44 +75,64 @@ async fn _survey(
     answers: String,
 ) -> Result<()> {
     let answers = answers.split(',').map(str::trim).collect::<Vec<_>>();
+    let duration = Duration::from_secs(duration.unwrap_or(3600));
 
-    let msg = ctx
+    let res = ctx
         .send(|m| {
-            m.content(&title).components(|c| {
-                c.create_action_row(|row| {
-                    row.create_select_menu(|menu| {
-                        if let Some(max) = max {
-                            menu.min_values(1);
-                            menu.max_values(max);
-                        }
-                        menu.custom_id(&title);
-                        menu.placeholder("Select an answer");
-                        menu.options(|f| {
-                            for answer in answers {
-                                f.create_option(|o| o.label(answer).value(answer));
-                            }
-                            f
-                        })
+            m.embed(|e| {
+                e.title(&title)
+                    .author(|a| {
+                        a.name(&ctx.author().name).icon_url(
+                            ctx.author()
+                                .avatar_url()
+                                .unwrap_or_else(|| ctx.author().default_avatar_url()),
+                        )
                     })
+                    .colour(Color::ROHRKATZE_BLUE)
+            })
+            .components(|c| {
+                c.create_action_row(|row| {
+                    row.create_button(|b| b.custom_id("Answer").emoji('\u{1f4e2}').label("Answer"))
                 })
             })
         })
         .await?;
 
-    let mut interactions = msg
+    let mut interactions = res
         .into_message()
         .await?
         .await_component_interactions(ctx)
-        .timeout(Duration::from_secs(duration.unwrap_or(3600)))
+        .timeout(duration)
         .build();
 
     while let Some(interaction) = interactions.next().await {
-        interaction
-            .create_interaction_response(ctx, |r| {
-                r.kind(InteractionResponseType::UpdateMessage)
-                    .interaction_response_data(|d| d.content(&interaction.data.values[0]))
-            })
-            .await?;
+        if interaction.data.custom_id == "Answer" {
+            interaction
+                .create_interaction_response(ctx, |m| {
+                    m.kind(InteractionResponseType::Modal)
+                        .interaction_response_data(|m| {
+                            m.ephemeral(true).components(|c| {
+                                c.create_action_row(|r| {
+                                    r.create_select_menu(|menu| {
+                                        if let Some(max) = max {
+                                            menu.min_values(1);
+                                            menu.max_values(max);
+                                        }
+                                        menu.custom_id(&title);
+                                        menu.placeholder("Select an answer");
+                                        menu.options(|f| {
+                                            for answer in &answers {
+                                                f.create_option(|o| o.label(answer).value(answer));
+                                            }
+                                            f
+                                        })
+                                    })
+                                })
+                            })
+                        })
+                })
+                .await?
+        }
     }
 
     Ok(())
