@@ -1,25 +1,25 @@
-#![warn(clippy::all, clippy::cargo, rust_2018_idioms)]
-#![windows_subsystem = "console"]
-#![doc = include_str!("../README.md")]
-
-mod commands;
-mod util;
+#![warn(clippy::all, clippy::cargo, clippy::nursery, rust_2018_idioms)]
 
 use std::env;
 use std::process;
 use std::time::Duration;
 
 use anyhow::{bail, Error, Result};
+use poise::builtins::register_globally;
 use poise::serenity_prelude::oauth::Scope;
 use poise::serenity_prelude::{self as serenity, Activity, GatewayIntents, Permissions};
 use poise::{EditTracker, FrameworkOptions, PrefixFrameworkOptions};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 
+mod commands;
+mod util;
+
 #[derive(Debug, Clone)]
-struct Data {}
+pub struct Data {}
 type Context<'a> = poise::Context<'a, Data, Error>;
 type Framework = poise::Framework<Data, Error>;
+type FrameworkError<'a> = poise::FrameworkError<'a, Data, Error>;
 
 #[tokio::main]
 async fn main() {
@@ -58,8 +58,9 @@ async fn run() -> Result<()> {
         ..PrefixFrameworkOptions::default()
     };
     let options = FrameworkOptions {
-        on_error: move |err| Box::pin(async move { error!(?err) }),
-        commands: vec![],
+        commands: vec![commands::ping(), commands::order(), commands::survey()],
+        on_error: move |e| Box::pin(on_error(e)),
+        pre_command: move |ctx| Box::pin(pre_command(ctx)),
         command_check: Some(move |ctx| Box::pin(command_check(ctx))),
         prefix_options,
         ..FrameworkOptions::default()
@@ -67,7 +68,7 @@ async fn run() -> Result<()> {
 
     Framework::builder()
         .token(token)
-        .setup(|c, r, _| Box::pin(setup(c, r)))
+        .setup(|c, r, f| Box::pin(setup(c, r, f)))
         .options(options)
         .intents(GatewayIntents::non_privileged())
         .run_autosharded()
@@ -76,15 +77,49 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
+async fn on_error(err: FrameworkError<'_>) {
+    match err {
+        poise::FrameworkError::Command { error, ctx } => {
+            error!("{error}");
+            drop(
+                ctx.send(|m| {
+                    m.ephemeral(true)
+                        .content("Error executing command \u{1fae4}")
+                })
+                .await,
+            );
+        }
+        _ => {
+            error!("{err}");
+            error!("{err:?}");
+            if let Some(ctx) = err.ctx() {
+                drop(
+                    ctx.send(|m| m.ephemeral(true).content("An error occurred \u{1fae4}"))
+                        .await,
+                );
+            }
+        }
+    }
+}
+
 #[tracing::instrument(skip_all)]
-async fn command_check(ctx: crate::Context<'_>) -> Result<bool> {
+async fn command_check(ctx: Context<'_>) -> Result<bool> {
     Ok(!ctx.author().bot)
 }
 
 #[tracing::instrument(skip_all)]
-async fn setup(ctx: &serenity::Context, ready: &serenity::Ready) -> Result<Data> {
-    debug!(guilds = ?ready.guilds);
-    info!("Logged in as {}", ready.user.tag());
+async fn setup(
+    ctx: &serenity::Context,
+    ready: &serenity::Ready,
+    framework: &Framework,
+) -> Result<Data> {
+    register_globally(ctx, &framework.options().commands).await?;
+
+    info!(
+        "{} available in {} servers",
+        ready.user.tag(),
+        ready.guilds.len()
+    );
 
     invite_url(ctx, ready).await;
     activity_from_env(ctx).await;
@@ -135,6 +170,16 @@ async fn activity_from_env(ctx: &serenity::Context) {
     };
 
     if let Some(activity) = activity {
+        info!("{:?} {}", &activity.kind, &activity.name);
         ctx.set_activity(activity).await;
     }
+}
+
+#[tracing::instrument(skip_all)]
+async fn pre_command(ctx: Context<'_>) {
+    info!(
+        "{} used command `{}`",
+        ctx.author().tag(),
+        ctx.invocation_string()
+    );
 }

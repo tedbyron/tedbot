@@ -1171,6 +1171,7 @@ dependencies = [
  "anyhow",
  "dotenvy",
  "poise",
+ "rand",
  "tokio",
  "tracing",
  "tracing-subscriber",
