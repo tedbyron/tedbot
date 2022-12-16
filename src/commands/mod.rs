@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use poise::futures_util::StreamExt;
-use poise::serenity_prelude::{Color, InteractionResponseType};
+use poise::serenity_prelude::{Color, CreateComponents, InteractionResponseType};
 use poise::{command, ChoiceParameter};
 use rand::Rng;
 
@@ -74,10 +74,14 @@ async fn _poll(
     max: Option<u64>,
     answers: String,
 ) -> Result<()> {
-    let answers = answers.split(',').map(str::trim).collect::<Vec<_>>();
+    let answers = answers
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
     let duration = Duration::from_secs(duration.unwrap_or(3600));
 
-    let res = ctx
+    let m = ctx
         .send(|m| {
             m.embed(|e| {
                 e.title(&title)
@@ -98,7 +102,7 @@ async fn _poll(
         })
         .await?;
 
-    let mut interactions = res
+    let mut interactions = m
         .into_message()
         .await?
         .await_component_interactions(ctx)
@@ -109,29 +113,53 @@ async fn _poll(
         if interaction.data.custom_id == "Answer" {
             interaction
                 .create_interaction_response(ctx, |m| {
-                    m.kind(InteractionResponseType::Modal)
-                        .interaction_response_data(|m| {
-                            m.ephemeral(true).components(|c| {
-                                c.create_action_row(|r| {
-                                    r.create_select_menu(|menu| {
-                                        if let Some(max) = max {
-                                            menu.min_values(1);
-                                            menu.max_values(max);
+                    m.interaction_response_data(|c| {
+                        c.ephemeral(true).components(|c| {
+                            c.create_action_row(|r| {
+                                r.create_select_menu(|menu| {
+                                    if let Some(max) = max {
+                                        menu.min_values(1);
+                                        menu.max_values(max);
+                                    }
+                                    menu.custom_id(&title);
+                                    menu.placeholder("Select an answer");
+                                    menu.options(|f| {
+                                        for answer in &answers {
+                                            f.create_option(|o| o.label(answer).value(answer));
                                         }
-                                        menu.custom_id(&title);
-                                        menu.placeholder("Select an answer");
-                                        menu.options(|f| {
-                                            for answer in &answers {
-                                                f.create_option(|o| o.label(answer).value(answer));
-                                            }
-                                            f
-                                        })
+                                        f
                                     })
                                 })
                             })
                         })
+                    })
                 })
-                .await?
+                .await?;
+
+            let msg = interaction.get_interaction_response(ctx).await?;
+
+            match msg
+                .await_component_interaction(ctx)
+                .timeout(Duration::from_secs(300))
+                .await
+            {
+                Some(interaction) => {
+                    println!("{:?}", interaction.data);
+                    interaction
+                        .create_interaction_response(ctx, |m| {
+                            m.kind(InteractionResponseType::UpdateMessage)
+                                .interaction_response_data(|c| {
+                                    c.ephemeral(true)
+                                        .content("Response recorded")
+                                        .set_components(CreateComponents::default())
+                                })
+                        })
+                        .await?
+                }
+                None => {
+                    msg.reply(ctx, "Timed out").await?;
+                }
+            }
         }
     }
 
