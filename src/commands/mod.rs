@@ -1,4 +1,5 @@
-use std::time::Duration;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use poise::futures_util::StreamExt;
@@ -52,7 +53,7 @@ pub async fn poll(
     #[description = "Poll duration in seconds (default: 1h)"] duration: Option<u64>,
     #[description = "Comma separated answers"] answers: String,
 ) -> Result<()> {
-    _poll(ctx, title, duration, None, answers).await
+    _poll(ctx, title, duration, 1, answers).await
 }
 
 /// Create a poll that accepts multiple responses
@@ -64,14 +65,19 @@ pub async fn multipoll(
     #[description = "Maximum number of selected answers"] max: u64,
     #[description = "Comma separated answers"] answers: String,
 ) -> Result<()> {
-    _poll(ctx, title, duration, Some(max), answers).await
+    _poll(ctx, title, duration, max, answers).await
+}
+
+struct PollValue {
+    answers: Vec<String>,
+    count: u64,
 }
 
 async fn _poll(
     ctx: Context<'_>,
     title: String,
     duration: Option<u64>,
-    max: Option<u64>,
+    max: u64,
     answers: String,
 ) -> Result<()> {
     let answers = answers
@@ -80,8 +86,7 @@ async fn _poll(
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>();
     let duration = Duration::from_secs(duration.unwrap_or(3600));
-
-    let m = ctx
+    let handle = ctx
         .send(|m| {
             m.embed(|e| {
                 e.title(&title)
@@ -101,23 +106,23 @@ async fn _poll(
             })
         })
         .await?;
-
-    let mut interactions = m
-        .into_message()
-        .await?
+    let poll_msg = handle.message().await?;
+    let mut answer_reqs = poll_msg
         .await_component_interactions(ctx)
         .timeout(duration)
         .build();
+    let timer = Instant::now();
+    let mut responses = HashMap::new();
 
-    while let Some(interaction) = interactions.next().await {
-        if interaction.data.custom_id == "Answer" {
-            interaction
+    while let Some(answer_req) = answer_reqs.next().await {
+        if answer_req.data.custom_id == "Answer" {
+            answer_req
                 .create_interaction_response(ctx, |m| {
                     m.interaction_response_data(|c| {
                         c.ephemeral(true).components(|c| {
                             c.create_action_row(|r| {
                                 r.create_select_menu(|menu| {
-                                    if let Some(max) = max {
+                                    if max > 1 {
                                         menu.min_values(1);
                                         menu.max_values(max);
                                     }
@@ -136,11 +141,15 @@ async fn _poll(
                 })
                 .await?;
 
-            let msg = interaction.get_interaction_response(ctx).await?;
+            // let answer_msg = answer_req.get_interaction_response(ctx).await?;
+            answer_msg
+                .await_component_interactions(ctx)
+                .timeout(duration - timer.elapsed())
+                .build();
 
-            match msg
+            match answer_msg
                 .await_component_interaction(ctx)
-                .timeout(Duration::from_secs(300))
+                .timeout(duration - timer.elapsed())
                 .await
             {
                 Some(interaction) => {
@@ -154,10 +163,10 @@ async fn _poll(
                                         .set_components(CreateComponents::default())
                                 })
                         })
-                        .await?
+                        .await?;
                 }
                 None => {
-                    msg.reply(ctx, "Timed out").await?;
+                    answer_msg.reply(ctx, "Timed out").await?;
                 }
             }
         }
