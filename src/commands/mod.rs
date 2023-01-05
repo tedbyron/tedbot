@@ -141,7 +141,7 @@ async fn _poll(
                 })
                 .await?;
 
-            // let answer_msg = answer_req.get_interaction_response(ctx).await?;
+            let answer_msg = answer_req.get_interaction_response(ctx).await?;
             answer_msg
                 .await_component_interactions(ctx)
                 .timeout(duration - timer.elapsed())
@@ -153,7 +153,7 @@ async fn _poll(
                 .await
             {
                 Some(interaction) => {
-                    println!("{:?}", interaction.data);
+                    responses.insert(interaction.user.tag(), interaction.data.values);
                     interaction
                         .create_interaction_response(ctx, |m| {
                             m.kind(InteractionResponseType::UpdateMessage)
@@ -169,6 +169,8 @@ async fn _poll(
                     answer_msg.reply(ctx, "Timed out").await?;
                 }
             }
+
+            println!("{responses:?}");
         }
     }
 
