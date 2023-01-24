@@ -1,18 +1,33 @@
 #![warn(clippy::all, clippy::cargo, clippy::nursery, rust_2018_idioms)]
 
-use std::env;
+use std::fs;
 use std::process;
 use std::time::Duration;
 
-use anyhow::{bail, Error, Result};
+use anyhow::{Error, Result};
 use poise::builtins::register_globally;
 use poise::serenity_prelude::oauth::Scope;
 use poise::serenity_prelude::{self as serenity, Activity, GatewayIntents, Permissions};
 use poise::{EditTracker, FrameworkOptions, PrefixFrameworkOptions};
-use tracing::{error, info, warn};
-use tracing_subscriber::filter::EnvFilter;
+use serde::Deserialize;
+use tracing::{error, info, warn, Level};
 
 mod commands;
+
+#[derive(Debug, Deserialize)]
+pub struct Config {
+    log_level: Option<String>,
+    token: String,
+    activity: Option<ConfigActivity>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConfigActivity {
+    #[serde(rename = "type")]
+    _type: Option<String>,
+    name: Option<String>,
+    streaming_url: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct Data {}
@@ -32,30 +47,30 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
-    #[cfg(feature = "dotenv")]
-    dotenvy::dotenv()?;
+    let cfg = toml::from_str::<Config>(&fs::read_to_string("config.toml")?)?;
 
     tracing_subscriber::fmt()
         .with_target(false)
-        .with_env_filter(EnvFilter::from_env("TEDBOT_LOG"))
+        .with_max_level(
+            cfg.log_level
+                .as_ref()
+                .map_or(Level::INFO, |lvl| match lvl.as_str() {
+                    "error" => Level::ERROR,
+                    "warn" => Level::WARN,
+                    "debug" => Level::DEBUG,
+                    "trace" => Level::TRACE,
+                    _ => Level::INFO,
+                }),
+        )
         .init();
 
-    let token = match env::var("TEDBOT_TOKEN") {
-        Ok(token) => token,
-        Err(_) => bail!("Missing TEDBOT_TOKEN env var"),
-    };
     let prefix_options = PrefixFrameworkOptions {
         prefix: None,
         edit_tracker: Some(EditTracker::for_timespan(Duration::from_secs(3600))),
         ..PrefixFrameworkOptions::default()
     };
     let options = FrameworkOptions {
-        commands: vec![
-            commands::ping(),
-            commands::order(),
-            commands::poll(),
-            commands::multipoll(),
-        ],
+        commands: vec![commands::ping()],
         on_error: move |e| Box::pin(on_error(e)),
         pre_command: move |ctx| Box::pin(pre_command(ctx)),
         command_check: Some(move |ctx| Box::pin(command_check(ctx))),
@@ -64,8 +79,8 @@ async fn run() -> Result<()> {
     };
 
     Framework::builder()
-        .token(token)
-        .setup(|c, r, f| Box::pin(setup(c, r, f)))
+        .token(cfg.token)
+        .setup(move |c, r, f| Box::pin(setup(c, r, f, cfg.activity)))
         .options(options)
         .intents(GatewayIntents::non_privileged())
         .run_autosharded()
@@ -113,6 +128,7 @@ async fn setup(
     ctx: &serenity::Context,
     ready: &serenity::Ready,
     framework: &Framework,
+    cfg: Option<ConfigActivity>,
 ) -> Result<Data> {
     register_globally(ctx, &framework.options().commands).await?;
 
@@ -123,11 +139,14 @@ async fn setup(
     );
 
     invite_url(ctx, ready).await;
-    activity_from_env(ctx).await;
+    if let Some(cfg) = &cfg {
+        activity(ctx, cfg).await;
+    }
 
     Ok(Data {})
 }
 
+/// Generate invite URL with permissions.
 #[tracing::instrument(skip_all)]
 async fn invite_url(ctx: &serenity::Context, ready: &serenity::Ready) {
     ready
@@ -147,18 +166,16 @@ async fn invite_url(ctx: &serenity::Context, ready: &serenity::Ready) {
         )
 }
 
+/// Set bot activity.
 #[tracing::instrument(skip_all)]
-async fn activity_from_env(ctx: &serenity::Context) {
-    let activity = match (
-        env::var("TEDBOT_ACTIVITY_TYPE"),
-        env::var("TEDBOT_ACTIVITY_NAME"),
-    ) {
-        (Ok(type_), Ok(name)) => match type_.as_str() {
+async fn activity(ctx: &serenity::Context, cfg: &ConfigActivity) {
+    let activity = match (&cfg._type, &cfg.name) {
+        (Some(type_), Some(name)) => match type_.as_str() {
             "competing" => Some(Activity::competing(name)),
             "listening" => Some(Activity::listening(name)),
             "playing" => Some(Activity::playing(name)),
-            "streaming" => env::var("TEDBOT_ACTIVITY_STREAMING").map_or_else(
-                |_| {
+            "streaming" => cfg.streaming_url.as_ref().map_or_else(
+                || {
                     warn!("Missing TEDBOT_ACTIVITY_STREAMING env var");
                     None
                 },

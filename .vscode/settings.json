@@ -13,6 +13,5 @@
   "files.associations": {
     ".env": "shellscript",
     ".env.example": "shellscript"
-  },
-  "rust-analyzer.cargo.features": ["dotenv"]
+  }
 }

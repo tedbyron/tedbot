@@ -2,3 +2,5 @@
 **/*.rs.bk
 *.env
 !example.env
+config.toml
+!config.example.toml
