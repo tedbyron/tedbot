@@ -1,4 +1,4 @@
-#![warn(clippy::all, clippy::cargo, clippy::nursery, rust_2018_idioms)]
+#![warn(clippy::all, clippy::nursery, rust_2018_idioms)]
 
 use std::fs;
 use std::process;
@@ -15,16 +15,27 @@ use tracing::{error, info, warn, Level};
 mod commands;
 
 #[derive(Debug, Deserialize)]
-pub struct Config {
+struct Config {
     log_level: Option<String>,
-    token: String,
-    activity: Option<ConfigActivity>,
+    discord: DiscordConfig,
+    lastfm: LastFmConfig,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ConfigActivity {
+struct DiscordConfig {
+    token: String,
+    activity: Option<DiscordActivityConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LastFmConfig {
+    api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DiscordActivityConfig {
     #[serde(rename = "type")]
-    _type: Option<String>,
+    type_: Option<String>,
     name: Option<String>,
     streaming_url: Option<String>,
 }
@@ -79,8 +90,8 @@ async fn run() -> Result<()> {
     };
 
     Framework::builder()
-        .token(cfg.token)
-        .setup(move |c, r, f| Box::pin(setup(c, r, f, cfg.activity)))
+        .token(cfg.discord.token)
+        .setup(move |c, r, f| Box::pin(setup(c, r, f, cfg.discord.activity)))
         .options(options)
         .intents(GatewayIntents::non_privileged())
         .run_autosharded()
@@ -128,7 +139,7 @@ async fn setup(
     ctx: &serenity::Context,
     ready: &serenity::Ready,
     framework: &Framework,
-    cfg: Option<ConfigActivity>,
+    cfg: Option<DiscordActivityConfig>,
 ) -> Result<Data> {
     register_globally(ctx, &framework.options().commands).await?;
 
@@ -168,8 +179,8 @@ async fn invite_url(ctx: &serenity::Context, ready: &serenity::Ready) {
 
 /// Set bot activity.
 #[tracing::instrument(skip_all)]
-async fn activity(ctx: &serenity::Context, cfg: &ConfigActivity) {
-    let activity = match (&cfg._type, &cfg.name) {
+async fn activity(ctx: &serenity::Context, cfg: &DiscordActivityConfig) {
+    let activity = match (&cfg.type_, &cfg.name) {
         (Some(type_), Some(name)) => match type_.as_str() {
             "competing" => Some(Activity::competing(name)),
             "listening" => Some(Activity::listening(name)),
@@ -190,7 +201,5 @@ async fn activity(ctx: &serenity::Context, cfg: &ConfigActivity) {
     if let Some(activity) = activity {
         info!("{:?} {}", &activity.kind, &activity.name);
         ctx.set_activity(activity).await;
-    } else {
-        info!("No complete activity declared");
     }
 }

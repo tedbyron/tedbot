@@ -1,0 +1,15 @@
+# log level (ERROR < WARNING < INFO <= DEBUG < TRACE)
+log_level = 'info'
+
+[discord]
+token = ''
+
+# bot activity (competing [in] || listening [to] || playing || streaming || watching)
+[discord.activity]
+# type = 'listening'
+# name = '/commands'
+# streaming_url =
+
+[lastfm]
+api_key = ''
+shared_secret = ''
