@@ -1,3 +1,3 @@
 <div align="center">
-  <h1><code>tedbot-rs</code></h1>
+  <h1><code>tedbot</code></h1>
 </div>

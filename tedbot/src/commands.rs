@@ -53,7 +53,20 @@ pub async fn badadvice(
     let Data { openai_client } = ctx.data();
 
     // initial response and timer
-    let handle = ctx.say("Loading...").await?;
+    let handle = ctx
+        .send(|m| {
+            m.embed(|e| {
+                e.title(&prompt).color(Color::ROHRKATZE_BLUE).author(|a| {
+                    a.name(&ctx.author().name).icon_url(
+                        ctx.author()
+                            .avatar_url()
+                            .unwrap_or_else(|| ctx.author().default_avatar_url()),
+                    )
+                })
+            })
+            .content("Loading...")
+        })
+        .await?;
     let timer = Instant::now();
 
     // build and send request
