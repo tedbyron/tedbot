@@ -34,12 +34,10 @@ pub async fn order(ctx: Context<'_>, #[description = "Menu item"] item: OrderIte
 }
 
 macro_rules! build_message {
-    (opt) => { None };
-    (opt $role:expr) => { Some($role) };
-    ($content:expr $(, $role:expr)?) => {
+    ($role:expr, $content:expr $(,)?) => {
         ChatCompletionRequestMessageArgs::default()
+            .role($role)
             .content($content)
-            .role(build_message!(opt $($role)?).unwrap_or(Role::User))
             .build()?
     };
 }
@@ -55,7 +53,7 @@ pub async fn badadvice(
     // initial response and timer
     let handle = ctx
         .send(|m| {
-            m.embed(|e| {
+            m.content("Loading...").embed(|e| {
                 e.title(&prompt).color(Color::ROHRKATZE_BLUE).author(|a| {
                     a.name(&ctx.author().name).icon_url(
                         ctx.author()
@@ -64,7 +62,6 @@ pub async fn badadvice(
                     )
                 })
             })
-            .content("Loading...")
         })
         .await?;
     let timer = Instant::now();
@@ -74,35 +71,36 @@ pub async fn badadvice(
         .model("gpt-3.5-turbo")
         .messages([
             build_message!(
+                Role::System,
                 "You are a horrible life coach.
                 You are giving bad advice to a client.
                 You can only give funny, crazy, or absurd life advice.",
-                Role::System
             ),
-            build_message!(format!("Give me bad advice about {prompt}.")),
+            build_message!(Role::User, format!("Give me bad advice about {prompt}.")),
         ])
         .build()?;
     let res = openai_client.chat().create(req).await?;
-    let elapsed = timer.elapsed();
-    let s = elapsed.as_millis() / 1000;
-    let ms = elapsed.as_millis() % 1000;
+    let elapsed = timer.elapsed().as_millis();
+    let s = elapsed / 1000;
+    let ms = elapsed % 1000;
 
     // update response with result
     handle
         .edit(ctx, |m| {
-            m.embed(|e| {
-                e.title(&prompt)
-                    .color(Color::ROHRKATZE_BLUE)
-                    .author(|a| {
+            m.content(format!("Done in {s}s {ms}ms"))
+                .embed(|e| {
+                    e.title(&prompt).color(Color::ROHRKATZE_BLUE).author(|a| {
                         a.name(&ctx.author().name).icon_url(
                             ctx.author()
                                 .avatar_url()
                                 .unwrap_or_else(|| ctx.author().default_avatar_url()),
                         )
                     })
-                    .description(&res.choices[0].message.content)
-            })
-            .content(format!("Done in {s}s {ms}ms"))
+                })
+                .embed(|e| {
+                    e.color(Color::FOOYOO)
+                        .description(&res.choices[0].message.content)
+                })
         })
         .await?;
 
