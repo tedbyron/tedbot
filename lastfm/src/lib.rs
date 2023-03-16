@@ -53,6 +53,6 @@ impl Client {
         self.request(Method::GET, url, |req| req.query(query)).await
     }
 
-    #[inline]
-    async fn endpoint_get<U>(&self, url: U, query: &T)
+    // #[inline]
+    // async fn endpoint_get<U>(&self, url: U, query: &T)
 }

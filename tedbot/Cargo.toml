@@ -5,11 +5,13 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.69"
-lastfm = { path = "../lastfm" }
+async-openai = "0.9.4"
+humantime = "2.1.0"
+# lastfm = { path = "../lastfm" }
 poise = "0.5.2"
 rand = "0.8.5"
-serde = { version = "1.0.152", features = ["derive"] }
-tokio = { version = "1.25.0", features = ["rt-multi-thread", "macros", "signal", "parking_lot"] }
-toml = "0.7.1"
+serde = { version = "1.0.156", features = ["derive"] }
+tokio = { version = "1.26.0", features = ["rt-multi-thread", "macros", "signal", "parking_lot"] }
+toml = "0.7.3"
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }

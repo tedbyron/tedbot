@@ -1,47 +1,24 @@
 #![warn(clippy::all, clippy::nursery, rust_2018_idioms)]
 
-use std::fs;
+use std::path::Path;
 use std::process;
 use std::time::Duration;
+use std::{env, fs};
 
-use anyhow::{Error, Result};
+use anyhow::{bail, Error, Result};
 use poise::builtins::register_globally;
 use poise::serenity_prelude::oauth::Scope;
 use poise::serenity_prelude::{self as serenity, Activity, GatewayIntents, Permissions};
 use poise::{EditTracker, FrameworkOptions, PrefixFrameworkOptions};
-use serde::Deserialize;
 use tracing::{error, info, warn, Level};
 
 mod commands;
-
-#[derive(Debug, Deserialize)]
-struct Config {
-    log_level: Option<String>,
-    discord: DiscordConfig,
-    lastfm: LastFmConfig,
-}
-
-#[derive(Debug, Deserialize)]
-struct DiscordConfig {
-    token: String,
-    activity: Option<DiscordActivityConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LastFmConfig {
-    api_key: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct DiscordActivityConfig {
-    #[serde(rename = "type")]
-    type_: Option<String>,
-    name: Option<String>,
-    streaming_url: Option<String>,
-}
+mod config;
 
 #[derive(Debug, Clone)]
-pub struct Data {}
+pub struct Data {
+    openai_client: async_openai::Client,
+}
 type Context<'a> = poise::Context<'a, Data, Error>;
 type Framework = poise::Framework<Data, Error>;
 type FrameworkError<'a> = poise::FrameworkError<'a, Data, Error>;
@@ -51,14 +28,21 @@ async fn main() {
     process::exit(match run().await {
         Ok(_) => 0,
         Err(e) => {
-            error!("{e}");
+            error!("{e:#}");
             1
         }
     });
 }
 
 async fn run() -> Result<()> {
-    let cfg = toml::from_str::<Config>(&fs::read_to_string("config.toml")?)?;
+    match Path::new("config.toml").try_exists() {
+        Ok(false) | Err(_) => {
+            eprintln!("Can't access config.toml, does it exist?");
+            bail!("\u{1f626}");
+        }
+        Ok(true) => (),
+    }
+    let cfg = toml::from_str::<config::Config>(&fs::read_to_string("config.toml")?)?;
 
     tracing_subscriber::fmt()
         .with_target(false)
@@ -75,13 +59,15 @@ async fn run() -> Result<()> {
         )
         .init();
 
+    env::set_var("OPENAI_API_KEY", cfg.openai.api_key);
+
     let prefix_options = PrefixFrameworkOptions {
         prefix: None,
         edit_tracker: Some(EditTracker::for_timespan(Duration::from_secs(3600))),
         ..PrefixFrameworkOptions::default()
     };
     let options = FrameworkOptions {
-        commands: vec![commands::ping()],
+        commands: vec![commands::ping(), commands::order(), commands::badadvice()],
         on_error: move |e| Box::pin(on_error(e)),
         pre_command: move |ctx| Box::pin(pre_command(ctx)),
         command_check: Some(move |ctx| Box::pin(command_check(ctx))),
@@ -113,7 +99,6 @@ async fn on_error(err: FrameworkError<'_>) {
             );
         }
         _ => {
-            error!("{err}");
             error!("{err:?}");
             if let Some(ctx) = err.ctx() {
                 drop(
@@ -139,7 +124,7 @@ async fn setup(
     ctx: &serenity::Context,
     ready: &serenity::Ready,
     framework: &Framework,
-    cfg: Option<DiscordActivityConfig>,
+    cfg: Option<config::DiscordActivityConfig>,
 ) -> Result<Data> {
     register_globally(ctx, &framework.options().commands).await?;
 
@@ -154,7 +139,9 @@ async fn setup(
         activity(ctx, cfg).await;
     }
 
-    Ok(Data {})
+    Ok(Data {
+        openai_client: async_openai::Client::new(),
+    })
 }
 
 /// Generate invite URL with permissions.
@@ -179,7 +166,7 @@ async fn invite_url(ctx: &serenity::Context, ready: &serenity::Ready) {
 
 /// Set bot activity.
 #[tracing::instrument(skip_all)]
-async fn activity(ctx: &serenity::Context, cfg: &DiscordActivityConfig) {
+async fn activity(ctx: &serenity::Context, cfg: &config::DiscordActivityConfig) {
     let activity = match (&cfg.type_, &cfg.name) {
         (Some(type_), Some(name)) => match type_.as_str() {
             "competing" => Some(Activity::competing(name)),
