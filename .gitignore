@@ -4,3 +4,4 @@
 !example.env
 config.toml
 !config.example.toml
+prompts.txt

@@ -67,7 +67,11 @@ async fn run() -> Result<()> {
         ..PrefixFrameworkOptions::default()
     };
     let options = FrameworkOptions {
-        commands: vec![commands::ping(), commands::order(), commands::badadvice()],
+        commands: vec![
+            commands::ping(),
+            commands::order(),
+            commands::openai::badadvice(),
+        ],
         on_error: move |e| Box::pin(on_error(e)),
         pre_command: move |ctx| Box::pin(pre_command(ctx)),
         command_check: Some(move |ctx| Box::pin(command_check(ctx))),
