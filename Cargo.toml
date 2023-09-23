@@ -1,5 +1,6 @@
 [workspace]
-members = ["lastfm", "tedbot"]
+members = ["tedbot"]
+resolver = "2"
 
 [profile.dev]
 debug = 0

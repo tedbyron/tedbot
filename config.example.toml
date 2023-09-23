@@ -10,9 +10,5 @@ token = ''
 # name = '/commands'
 # streaming_url =
 
-[lastfm]
-api_key = ''
-shared_secret = ''
-
 [openai]
 api_key = ''

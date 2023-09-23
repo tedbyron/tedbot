@@ -4,8 +4,7 @@ use anyhow::Result;
 use async_openai::types::{
     ChatCompletionRequestMessageArgs, CreateChatCompletionRequestArgs, Role,
 };
-use poise::command;
-use poise::serenity_prelude::Color;
+use poise::{command, serenity_prelude::Color};
 
 use crate::{Context, Data};
 
@@ -19,8 +18,8 @@ macro_rules! build_message {
 }
 
 /// Generate bad advice using OpenAI's gpt-3.5-turbo model
-#[command(slash_command)]
-pub async fn badadvice(
+#[command(slash_command, rename = "bad advice")]
+pub async fn bad_advice(
     ctx: Context<'_>,
     #[description = "What do you want advice about?"] prompt: String,
 ) -> Result<()> {
@@ -31,7 +30,7 @@ pub async fn badadvice(
     let timer = Instant::now();
 
     // build and send request
-    let req = CreateChatCompletionRequestArgs::default()
+    let request = CreateChatCompletionRequestArgs::default()
         .model("gpt-3.5-turbo")
         .messages([
             build_message!(
@@ -43,7 +42,7 @@ pub async fn badadvice(
             build_message!(Role::User, format!("Give me bad advice about {prompt}.")),
         ])
         .build()?;
-    let res = openai_client.chat().create(req).await?;
+    let response = openai_client.chat().create(request).await?;
     let elapsed = timer.elapsed().as_millis();
     let s = elapsed / 1000;
     let ms = elapsed % 1000;
@@ -52,17 +51,13 @@ pub async fn badadvice(
     ctx.send(|m| {
         m.content(format!("Done in {s}s {ms}ms"))
             .embed(|e| {
-                e.title(&prompt).color(Color::ROHRKATZE_BLUE).author(|a| {
-                    a.name(&ctx.author().name).icon_url(
-                        ctx.author()
-                            .avatar_url()
-                            .unwrap_or_else(|| ctx.author().default_avatar_url()),
-                    )
-                })
+                e.title(&prompt)
+                    .color(Color::ROHRKATZE_BLUE)
+                    .author(|a| a.name(&ctx.author().name).icon_url(ctx.author().face()))
             })
             .embed(|e| {
                 e.color(Color::FOOYOO)
-                    .description(&res.choices[0].message.content)
+                    .description(response.choices[0].message.content.as_deref().unwrap_or(""))
             })
     })
     .await?;

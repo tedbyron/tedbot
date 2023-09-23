@@ -4,6 +4,7 @@ use poise::{command, ChoiceParameter};
 use crate::Context;
 
 pub mod openai;
+pub mod wordle;
 
 /// Ping the bot
 #[command(slash_command)]
