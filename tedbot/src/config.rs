@@ -6,7 +6,9 @@ use serde::Deserialize;
 pub struct Config {
     pub log_level: Option<String>,
     pub discord: DiscordConfig,
-    pub openai: OpenAiConfig,
+    #[serde(default)]
+    pub ersatztv: ErsatzTvConfig,
+    pub jellyfin: Option<JellyfinConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -24,6 +26,26 @@ pub struct DiscordActivityConfig {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct OpenAiConfig {
+#[serde(default)]
+pub struct ErsatzTvConfig {
+    pub url: String,
+}
+
+impl Default for ErsatzTvConfig {
+    fn default() -> Self {
+        Self {
+            url: "http://127.0.0.1:8409".into(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct JellyfinConfig {
+    #[serde(default = "default_jellyfin_url")]
+    pub url: String,
     pub api_key: String,
+}
+
+fn default_jellyfin_url() -> String {
+    "http://127.0.0.1:8096".into()
 }

@@ -6,9 +6,13 @@ token = ''
 
 # bot activity (competing [in] || listening [to] || playing || streaming || watching)
 [discord.activity]
-# type = 'listening'
-# name = '/commands'
+type = 'listening'
+name = '/commands'
 # streaming_url =
 
-[openai]
+[ersatztv]
+url = 'http://127.0.0.1:8409'
+
+[jellyfin]
+url = 'http://127.0.0.1:8096'
 api_key = ''

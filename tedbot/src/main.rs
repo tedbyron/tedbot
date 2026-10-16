@@ -1,23 +1,25 @@
-#![feature(lazy_cell)]
 #![warn(clippy::all, clippy::nursery, rust_2018_idioms)]
 
-use std::{env, fs, path::Path, process, time::Duration};
+use std::{env, fs, process, time::Duration};
 
-use anyhow::{bail, Error, Result};
-use async_openai::{config::OpenAIConfig, Client as OpenAIClient};
+use anyhow::{Context as _, Error, Result};
 use poise::{
+    CreateReply, FrameworkOptions,
     builtins::register_globally,
-    serenity_prelude::{self as serenity, oauth::Scope, Activity, GatewayIntents, Permissions},
-    EditTracker, FrameworkOptions, PrefixFrameworkOptions,
+    serenity_prelude::{self as serenity, ActivityData, GatewayIntents, Permissions},
 };
-use tracing::{error, info, warn, Level};
+use tracing::{Level, error, info, warn};
 
 mod commands;
 mod config;
+mod ersatztv;
+mod jellyfin;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Data {
-    openai_client: OpenAIClient<OpenAIConfig>,
+    http: reqwest::Client,
+    guide: ersatztv::GuideCache,
+    jellyfin: Option<jellyfin::Jellyfin>,
 }
 type Context<'a> = poise::Context<'a, Data, Error>;
 type Framework = poise::Framework<Data, Error>;
@@ -29,87 +31,74 @@ async fn main() {
         Ok(()) => 0,
         Err(e) => {
             error!("{e:#}");
+            eprintln!("{e:#}");
             1
         }
     });
 }
 
 async fn run() -> Result<()> {
-    match Path::new("config.toml").try_exists() {
-        Ok(false) | Err(_) => {
-            eprintln!("Can't access config.toml, does it exist?");
-            bail!("\u{1f626}");
-        }
-        Ok(true) => (),
-    }
-    let cfg = toml::from_str::<config::Config>(&fs::read_to_string("config.toml")?)?;
+    let path = env::var("TEDBOT_CONFIG").unwrap_or_else(|_| "config.toml".into());
+    let cfg = toml::from_str::<config::Config>(
+        &fs::read_to_string(&path).with_context(|| format!("reading {path}"))?,
+    )
+    .with_context(|| format!("parsing {path}"))?;
 
     tracing_subscriber::fmt()
         .with_target(false)
         .with_max_level(
             cfg.log_level
-                .as_ref()
-                .map_or(Level::INFO, |lvl| match lvl.as_str() {
-                    "error" => Level::ERROR,
-                    "warn" => Level::WARN,
-                    "debug" => Level::DEBUG,
-                    "trace" => Level::TRACE,
-                    _ => Level::INFO,
-                }),
+                .as_deref()
+                .and_then(|lvl| lvl.parse().ok())
+                .unwrap_or(Level::INFO),
         )
         .init();
 
-    env::set_var("OPENAI_API_KEY", cfg.openai.api_key);
-
-    let prefix_options = PrefixFrameworkOptions {
-        prefix: None,
-        edit_tracker: Some(EditTracker::for_timespan(Duration::from_secs(3600))),
-        ..PrefixFrameworkOptions::default()
-    };
     let options = FrameworkOptions {
         commands: vec![
             commands::ping(),
-            commands::order(),
-            commands::openai::bad_advice(),
-            commands::wordle::load(),
+            commands::live::live(),
+            commands::live::live_all(),
         ],
-        on_error: move |e| Box::pin(on_error(e)),
-        pre_command: move |ctx| Box::pin(pre_command(ctx)),
-        command_check: Some(move |ctx| Box::pin(command_check(ctx))),
-        prefix_options,
+        on_error: |e| Box::pin(on_error(e)),
+        pre_command: |ctx| Box::pin(pre_command(ctx)),
+        command_check: Some(|ctx| Box::pin(command_check(ctx))),
         ..FrameworkOptions::default()
     };
 
-    Framework::builder()
-        .token(cfg.discord.token)
-        .setup(move |ctx, ready, framework| {
-            Box::pin(setup(ctx, ready, framework, cfg.discord.activity))
-        })
+    let activity = cfg.discord.activity;
+    let http = reqwest::Client::new();
+    let data = Data {
+        guide: ersatztv::GuideCache::new(http.clone(), cfg.ersatztv.url, Duration::from_secs(60)),
+        http,
+        jellyfin: cfg.jellyfin.map(|j| jellyfin::Jellyfin {
+            url: j.url,
+            api_key: j.api_key,
+        }),
+    };
+    let framework = Framework::builder()
+        .setup(move |ctx, ready, framework| Box::pin(setup(ctx, ready, framework, activity, data)))
         .options(options)
-        .intents(GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT)
-        .run_autosharded()
+        .build();
+
+    serenity::ClientBuilder::new(cfg.discord.token, GatewayIntents::non_privileged())
+        .framework(framework)
+        .await?
+        .start_autosharded()
         .await?;
 
     Ok(())
 }
 
 async fn on_error(err: FrameworkError<'_>) {
-    if let poise::FrameworkError::Command { error, ctx } = err {
-        error!("{error}");
-        drop(
-            ctx.send(|m| {
-                m.ephemeral(true)
-                    .content("Error executing command \u{1fae4}")
-            })
-            .await,
-        );
+    let reply = |content| CreateReply::default().ephemeral(true).content(content);
+    if let poise::FrameworkError::Command { error, ctx, .. } = err {
+        error!("{error:#}");
+        drop(ctx.send(reply("Error executing command \u{1fae4}")).await);
     } else {
-        error!("{err:?}");
+        error!("{err}");
         if let Some(ctx) = err.ctx() {
-            drop(
-                ctx.send(|m| m.ephemeral(true).content("An error occurred \u{1fae4}"))
-                    .await,
-            );
+            drop(ctx.send(reply("An error occurred \u{1fae4}")).await);
         }
     }
 }
@@ -130,6 +119,7 @@ async fn setup(
     ready: &serenity::Ready,
     framework: &Framework,
     cfg: Option<config::DiscordActivityConfig>,
+    data: Data,
 ) -> Result<Data> {
     register_globally(ctx, &framework.options().commands).await?;
 
@@ -138,60 +128,50 @@ async fn setup(
         ready.user.tag(),
         ready.guilds.len()
     );
+    info!("{}", invite_url(ready));
 
-    invite_url(ctx, ready).await;
     if let Some(cfg) = &cfg {
-        activity(ctx, cfg).await;
+        activity(ctx, cfg);
     }
 
-    Ok(Data {
-        openai_client: OpenAIClient::new(),
-    })
+    Ok(data)
 }
 
-/// Generate invite URL with permissions.
-#[tracing::instrument(skip_all)]
-async fn invite_url(ctx: &serenity::Context, ready: &serenity::Ready) {
-    ready
-        .user
-        .invite_url_with_oauth2_scopes(
-            &ctx,
-            Permissions::ADD_REACTIONS
-                | Permissions::READ_MESSAGE_HISTORY
-                | Permissions::SEND_MESSAGES
-                | Permissions::VIEW_CHANNEL,
-            &[Scope::Bot, Scope::ApplicationsCommands],
-        )
-        .await
-        .map_or_else(
-            |_| warn!("Could not create a bot invite URL"),
-            |url| info!("{url}"),
-        );
+fn invite_url(ready: &serenity::Ready) -> String {
+    let permissions = Permissions::ADD_REACTIONS
+        | Permissions::READ_MESSAGE_HISTORY
+        | Permissions::SEND_MESSAGES
+        | Permissions::VIEW_CHANNEL;
+    format!(
+        "https://discord.com/oauth2/authorize?client_id={}&scope=bot+applications.commands&permissions={}",
+        ready.application.id,
+        permissions.bits()
+    )
 }
 
-/// Set bot activity.
 #[tracing::instrument(skip_all)]
-async fn activity(ctx: &serenity::Context, cfg: &config::DiscordActivityConfig) {
-    let activity = match (&cfg.r#type, &cfg.name) {
-        (Some(r#type), Some(name)) => match r#type.as_str() {
-            "competing" => Some(Activity::competing(name)),
-            "listening" => Some(Activity::listening(name)),
-            "playing" => Some(Activity::playing(name)),
-            "streaming" => cfg.streaming_url.as_ref().map_or_else(
-                || {
-                    warn!("Missing TEDBOT_ACTIVITY_STREAMING env var");
-                    None
-                },
-                |streaming| Some(Activity::streaming(name, streaming)),
-            ),
-            "watching" => Some(Activity::watching(name)),
-            _ => None,
-        },
+fn activity(ctx: &serenity::Context, cfg: &config::DiscordActivityConfig) {
+    let activity = match (cfg.r#type.as_deref(), cfg.name.as_deref()) {
+        (Some("competing"), Some(name)) => Some(ActivityData::competing(name)),
+        (Some("listening"), Some(name)) => Some(ActivityData::listening(name)),
+        (Some("playing"), Some(name)) => Some(ActivityData::playing(name)),
+        (Some("watching"), Some(name)) => Some(ActivityData::watching(name)),
+        (Some("streaming"), Some(name)) => cfg.streaming_url.as_deref().map_or_else(
+            || {
+                warn!("Missing discord.activity.streaming_url");
+                None
+            },
+            |url| {
+                ActivityData::streaming(name, url)
+                    .inspect_err(|e| warn!("Invalid discord.activity.streaming_url: {e}"))
+                    .ok()
+            },
+        ),
         _ => None,
     };
 
     if let Some(activity) = activity {
-        info!("{:?} {}", &activity.kind, &activity.name);
-        ctx.set_activity(activity).await;
+        info!("{:?} {}", activity.kind, activity.name);
+        ctx.set_activity(Some(activity));
     }
 }

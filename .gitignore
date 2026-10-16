@@ -5,3 +5,6 @@
 config.toml
 !config.example.toml
 prompts.txt
+.claude/settings.local.json
+.direnv/
+result
