@@ -9,7 +9,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-latest is aarch64-darwin, which the bot is deployed on
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
