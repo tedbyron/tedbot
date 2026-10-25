@@ -1,13 +1,19 @@
-name: "Build default package"
+name: "Check flake"
 
 on:
   push:
+  pull_request:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-latest is aarch64-darwin, which the bot is deployed on
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
-      - name: build
-        run: nix build
+      - name: check
+        run: nix flake check -L

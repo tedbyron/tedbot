@@ -12,8 +12,10 @@ home media server.
   never in the repo.
 - Edition 2024, stable toolchain via `rust-toolchain.toml`, poise 0.7 / serenity
   0.12.
-- `flake.nix` exposes `packages.default` (rustPlatform from the rust-overlay
-  toolchain), a devShell, and treefmt as `nix fmt`.
+- `flake.nix` exposes `packages.default` (crane with the rust-overlay
+  toolchain), a devShell, and treefmt as `nix fmt`. `nix flake check` runs the
+  build, clippy (`-D warnings`), tests and formatting, sharing one dependency
+  build.
 
 ## Media server it talks to
 

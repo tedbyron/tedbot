@@ -2,6 +2,7 @@
   inputs = {
     nixpkgs.url = "nixpkgs/nixpkgs-unstable";
     flake-utils.url = "flake-utils";
+    crane.url = "github:ipetkov/crane";
     rust-overlay.url = "github:oxalica/rust-overlay";
     treefmt.url = "github:/numtide/treefmt-nix";
     treefmt.inputs.nixpkgs.follows = "nixpkgs";
@@ -17,6 +18,21 @@
           overlays = [ (import inputs.rust-overlay) ];
         };
         rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        craneLib = (inputs.crane.mkLib pkgs).overrideToolchain rust;
+        commonArgs = {
+          src = craneLib.cleanCargoSource ./.;
+          strictDeps = true;
+          inherit (craneLib.crateNameFromCargoToml { cargoToml = ./tedbot/Cargo.toml; }) pname version;
+        };
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        tedbot = craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            doCheck = false;
+            meta.mainProgram = "tedbot";
+          }
+        );
         treefmt =
           (inputs.treefmt.lib.evalModule pkgs {
             programs = {
@@ -50,7 +66,18 @@
       in
       with pkgs;
       {
-        checks.formatting = treefmt.check self;
+        checks = {
+          inherit tedbot;
+          formatting = treefmt.check self;
+          clippy = craneLib.cargoClippy (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+            }
+          );
+          test = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
+        };
         formatter = treefmt.wrapper;
 
         devShells.default = mkShellNoCC {
@@ -60,28 +87,7 @@
           ];
         };
 
-        packages.default =
-          let
-            rustPlatform = makeRustPlatform {
-              cargo = rust;
-              rustc = rust;
-            };
-            manifest = lib.importTOML ./tedbot/Cargo.toml;
-          in
-          rustPlatform.buildRustPackage {
-            pname = manifest.package.name;
-            inherit (manifest.package) version;
-            src = lib.fileset.toSource {
-              root = ./.;
-              fileset = lib.fileset.unions [
-                ./Cargo.toml
-                ./Cargo.lock
-                ./tedbot
-              ];
-            };
-            cargoLock.lockFile = ./Cargo.lock;
-            meta.mainProgram = "tedbot";
-          };
+        packages.default = tedbot;
       }
     );
 }
