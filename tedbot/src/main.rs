@@ -89,6 +89,7 @@ async fn run() -> Result<()> {
     let options = FrameworkOptions {
         commands: vec![
             commands::request::request(),
+            commands::requests::requests(),
             commands::streams::streams(),
             commands::tv::tv(),
         ],

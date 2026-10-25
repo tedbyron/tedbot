@@ -113,6 +113,24 @@ pub struct Profile {
     pub name: String,
 }
 
+/// The quality profiles on a Radarr or Sonarr server
+#[derive(Clone, Debug, Default)]
+pub struct Profiles {
+    /// Seerr's id for the server
+    pub server: u32,
+    pub list: Vec<Profile>,
+}
+
+impl Profiles {
+    /// Profile `id`'s name
+    pub fn name(&self, id: u32) -> Option<&str> {
+        self.list
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.name.as_str())
+    }
+}
+
 /// Response of `GET /api/v1/user/{id}`, which unlike the list includes settings
 #[derive(Debug, Deserialize)]
 struct UserDetail {
@@ -296,6 +314,10 @@ pub struct Request {
     pub id: u32,
     pub status: RequestStatus,
     pub is4k: bool,
+    /// What was requested. Absent when listed under the media itself.
+    pub media: Option<RequestMedia>,
+    /// When it was made, RFC 3339
+    pub created_at: Option<String>,
     /// Who made it
     pub requested_by: Option<RequestedBy>,
     /// Who last changed its status: the requester if it was approved automatically, else
@@ -304,13 +326,80 @@ pub struct Request {
     /// Requested seasons, shows only. Their statuses here are request statuses.
     #[serde(default)]
     pub seasons: Vec<RequestSeason>,
+    /// Radarr or Sonarr server, `None` for the default
+    pub server_id: Option<u32>,
+    /// Quality profile, `None` for the server's default
+    pub profile_id: Option<u32>,
+    pub root_folder: Option<String>,
+    /// Sonarr only
+    pub language_profile_id: Option<u32>,
+    pub tags: Option<Vec<u32>>,
+}
+
+/// The movie or show a request is for
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestMedia {
+    /// TMDB id
+    pub tmdb_id: u32,
+    /// `movie` or `tv`
+    pub media_type: String,
+}
+
+impl Request {
+    /// The movie or show it's for, if Seerr said
+    pub fn media(&self) -> Option<Media> {
+        let media = self.media.as_ref()?;
+        match media.media_type.as_str() {
+            "movie" => Some(Media::Movie(media.tmdb_id)),
+            "tv" => Some(Media::Tv(media.tmdb_id)),
+            _ => None,
+        }
+    }
+
+    /// Whether it was approved, or declined, by the requester's own permissions rather than by
+    /// someone else
+    pub fn automatic(&self) -> bool {
+        let id = |by: &Option<RequestedBy>| by.as_ref().map(|by| by.id);
+        id(&self.modified_by).is_some() && id(&self.modified_by) == id(&self.requested_by)
+    }
+
+    /// Requested season numbers, shows only
+    pub fn season_numbers(&self) -> Vec<u32> {
+        self.seasons.iter().map(|s| s.season_number).collect()
+    }
 }
 
 /// A user a request refers to
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RequestedBy {
     /// Seerr's user id
     pub id: u32,
+    pub display_name: Option<String>,
+}
+
+/// Response of `GET /api/v1/request`
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestList {
+    page_info: PageInfo,
+    results: Vec<Request>,
+}
+
+/// Paging of a list
+#[derive(Debug, Deserialize)]
+struct PageInfo {
+    /// Total across every page
+    results: u32,
+}
+
+/// One page of requests
+#[derive(Debug)]
+pub struct RequestPage {
+    /// Requests matching, across every page
+    pub total: u32,
+    pub requests: Vec<Request>,
 }
 
 /// One season of a show request
@@ -426,10 +515,32 @@ impl Details {
             .flat_map(|m| &m.requests)
             .filter(|r| !r.is4k && r.status == RequestStatus::Approved)
             .find(|r| n.is_none_or(|n| r.seasons.iter().any(|s| s.season_number == n)))
-            .is_some_and(|r| {
-                let id = |by: &Option<RequestedBy>| by.as_ref().map(|by| by.id);
-                id(&r.modified_by).is_some() && id(&r.modified_by) == id(&r.requested_by)
-            })
+            .is_some_and(Request::automatic)
+    }
+
+    /// Where what `request` asked for stands: the movie, or the request's seasons together
+    pub fn request_status(&self, request: &Request) -> Status {
+        if request.seasons.is_empty() {
+            return self.status();
+        }
+        let statuses: Vec<Status> = request
+            .seasons
+            .iter()
+            .map(|s| self.season_status(s.season_number))
+            .collect();
+        if statuses.iter().all(|&s| s == Status::Available) {
+            Status::Available
+        } else if statuses
+            .iter()
+            .any(|s| matches!(s, Status::Available | Status::PartiallyAvailable))
+        {
+            Status::PartiallyAvailable
+        } else {
+            statuses
+                .into_iter()
+                .max_by_key(|&s| s == Status::Processing)
+                .unwrap_or(Status::Missing)
+        }
     }
 
     /// Where season `n` stands. Like Seerr, a season in an open (not declined or completed)
@@ -500,12 +611,27 @@ pub struct Cancellable {
     pub seasons: Vec<u32>,
 }
 
-/// What came of cancelling a request
+/// What came of changing a request: cancelling, approving, declining or editing it
 #[derive(Debug)]
-pub enum Cancelled {
+pub enum Changed {
     Done,
     /// Seerr said no, e.g. because it's been approved since. The message is Seerr's.
     Refused(String),
+}
+
+/// Body of `PUT /api/v1/request/{id}`. Seerr sets every field from it, so the ones not being
+/// changed are sent back as they were.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EditRequest<'a> {
+    media_type: &'static str,
+    server_id: Option<u32>,
+    profile_id: Option<u32>,
+    root_folder: Option<&'a str>,
+    language_profile_id: Option<u32>,
+    tags: Option<&'a [u32]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seasons: Option<&'a [u32]>,
 }
 
 /// What came of a request
@@ -535,7 +661,7 @@ impl Seerr {
     }
 
     /// The first nonzero Discord id in the notification settings of Seerr user `id`
-    async fn discord_id(&self, http: &reqwest::Client, id: u32) -> Result<Option<UserId>> {
+    pub async fn discord_id(&self, http: &reqwest::Client, id: u32) -> Result<Option<UserId>> {
         let detail: UserDetail = self
             .get(http, &format!("/user/{id}"))
             .send()
@@ -616,8 +742,8 @@ impl Seerr {
     }
 
     /// Quality profiles on the default non-4K server for `media`, which is where a request
-    /// without a server goes. Empty if there's no such server.
-    pub async fn profiles(&self, http: &reqwest::Client, media: Media) -> Result<Vec<Profile>> {
+    /// without a server goes. `None` if there's no such server.
+    pub async fn profiles(&self, http: &reqwest::Client, media: Media) -> Result<Option<Profiles>> {
         let service = media.service();
         let servers: Vec<Server> = self
             .get(http, &format!("/service/{service}"))
@@ -627,7 +753,7 @@ impl Seerr {
             .json()
             .await?;
         let Some(server) = servers.iter().find(|s| s.is_default && !s.is4k) else {
-            return Ok(Vec::new());
+            return Ok(None);
         };
         let details: ServerDetails = self
             .get(http, &format!("/service/{service}/{}", server.id))
@@ -636,7 +762,10 @@ impl Seerr {
             .error_for_status()?
             .json()
             .await?;
-        Ok(details.profiles)
+        Ok(Some(Profiles {
+            server: server.id,
+            list: details.profiles,
+        }))
     }
 
     /// Movies and shows matching `query`, best match first. One page, so at most 20.
@@ -719,26 +848,137 @@ impl Seerr {
         http: &reqwest::Client,
         user: Option<u32>,
         id: u32,
-    ) -> Result<Cancelled> {
+    ) -> Result<Changed> {
         let mut request = http
             .delete(self.api(&format!("/request/{id}")))
             .header("X-Api-Key", &self.api_key);
         if let Some(user) = user {
             request = request.header("X-API-User", user.to_string());
         }
-        let response = request.send().await?;
-        match response.status() {
-            StatusCode::NO_CONTENT => Ok(Cancelled::Done),
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
-                let body: ErrorBody = response.json().await?;
-                Ok(Cancelled::Refused(body.message.unwrap_or_else(|| {
-                    "Seerr refused to cancel the request".into()
-                })))
-            }
-            status => {
-                response.error_for_status()?;
-                anyhow::bail!("unexpected status {status} from Seerr")
-            }
+        changed(
+            request.send().await?,
+            StatusCode::NO_CONTENT,
+            "Seerr refused to cancel the request",
+        )
+        .await
+    }
+
+    /// Requests matching Seerr's `filter` (`all`, `pending`, `processing`, `available`, ...),
+    /// newest first, skipping `skip` and taking up to `take`. Only Seerr user `user`'s with
+    /// `Some`.
+    pub async fn requests(
+        &self,
+        http: &reqwest::Client,
+        filter: &str,
+        user: Option<u32>,
+        skip: usize,
+        take: usize,
+    ) -> Result<RequestPage> {
+        let mut query = vec![
+            ("filter", filter.to_owned()),
+            ("sort", "added".into()),
+            ("skip", skip.to_string()),
+            ("take", take.to_string()),
+        ];
+        if let Some(user) = user {
+            query.push(("requestedBy", user.to_string()));
+        }
+        let list: RequestList = self
+            .get(http, "/request")
+            .query(&query)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(RequestPage {
+            total: list.page_info.results,
+            requests: list.results,
+        })
+    }
+
+    /// Request `id`, `None` if it's been deleted
+    pub async fn request_by_id(&self, http: &reqwest::Client, id: u32) -> Result<Option<Request>> {
+        let response = self.get(http, &format!("/request/{id}")).send().await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        Ok(Some(response.error_for_status()?.json().await?))
+    }
+
+    /// Approves or declines pending request `id` as Seerr's admin, so the caller has to have
+    /// checked who may
+    pub async fn review(&self, http: &reqwest::Client, id: u32, approve: bool) -> Result<Changed> {
+        let action = if approve { "approve" } else { "decline" };
+        let response = http
+            .post(self.api(&format!("/request/{id}/{action}")))
+            .header("X-Api-Key", &self.api_key)
+            .send()
+            .await?;
+        changed(
+            response,
+            StatusCode::OK,
+            "Seerr refused to change the request",
+        )
+        .await
+    }
+
+    /// Changes pending `request`'s quality profile and, for shows, seasons, as Seerr's admin, so
+    /// the caller has to have checked who may. Everything else stays as it was.
+    pub async fn edit(
+        &self,
+        http: &reqwest::Client,
+        request: &Request,
+        profile: Option<u32>,
+        seasons: &[u32],
+    ) -> Result<Changed> {
+        let media_type = match request.media() {
+            Some(Media::Movie(_)) => "movie",
+            Some(Media::Tv(_)) => "tv",
+            None => anyhow::bail!("request {} isn't for a movie or show", request.id),
+        };
+        let body = EditRequest {
+            media_type,
+            server_id: request.server_id,
+            profile_id: profile,
+            root_folder: request.root_folder.as_deref(),
+            language_profile_id: request.language_profile_id,
+            tags: request.tags.as_deref(),
+            seasons: (media_type == "tv").then_some(seasons),
+        };
+        let response = http
+            .put(self.api(&format!("/request/{}", request.id)))
+            .header("X-Api-Key", &self.api_key)
+            .json(&body)
+            .send()
+            .await?;
+        changed(
+            response,
+            StatusCode::OK,
+            "Seerr refused to change the request",
+        )
+        .await
+    }
+}
+
+/// Reads a response to changing a request: `ok` is success, and refusals carry Seerr's message,
+/// or `fallback` without one. Seerr answers 202 when an edit leaves no seasons to request.
+async fn changed(response: reqwest::Response, ok: StatusCode, fallback: &str) -> Result<Changed> {
+    match response.status() {
+        status if status == ok => Ok(Changed::Done),
+        StatusCode::ACCEPTED
+        | StatusCode::UNAUTHORIZED
+        | StatusCode::FORBIDDEN
+        | StatusCode::NOT_FOUND
+        | StatusCode::CONFLICT => {
+            let body: ErrorBody = response.json().await.unwrap_or(ErrorBody { message: None });
+            Ok(Changed::Refused(
+                body.message.unwrap_or_else(|| fallback.into()),
+            ))
+        }
+        status => {
+            response.error_for_status()?;
+            anyhow::bail!("unexpected status {status} from Seerr")
         }
     }
 }
@@ -854,6 +1094,54 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn request_list() {
+        let list: RequestList = serde_json::from_str(
+            r#"{
+                "pageInfo": {"pages": 79, "pageSize": 1, "results": 236, "page": 1},
+                "results": [{
+                    "id": 255, "status": 2, "is4k": false, "serverId": null, "profileId": 7,
+                    "rootFolder": null, "languageProfileId": null, "tags": null,
+                    "createdAt": "2026-10-25T23:18:09.000Z", "type": "tv",
+                    "media": {"tmdbId": 1920, "tvdbId": 70533, "mediaType": "tv", "status": 3},
+                    "requestedBy": {"id": 8, "displayName": "someone", "settings": null},
+                    "modifiedBy": {"id": 1, "displayName": "admin"},
+                    "seasons": [{"id": 70, "seasonNumber": 1, "status": 2},
+                                {"id": 71, "seasonNumber": 2, "status": 2}]
+                }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(list.page_info.results, 236);
+        let request = &list.results[0];
+        assert_eq!(request.media(), Some(Media::Tv(1920)));
+        assert_eq!(request.season_numbers(), [1, 2]);
+        assert_eq!(request.profile_id, Some(7));
+        assert!(!request.automatic());
+
+        let show: Details = serde_json::from_str(
+            r#"{
+                "name": "Show",
+                "mediaInfo": {
+                    "status": 4,
+                    "seasons": [
+                        {"seasonNumber": 1, "status": 5},
+                        {"seasonNumber": 2, "status": 3},
+                        {"seasonNumber": 3, "status": 5}
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(show.request_status(request), Status::PartiallyAvailable);
+        let only = |n| Request {
+            seasons: vec![RequestSeason { season_number: n }],
+            ..serde_json::from_str(r#"{"id": 1, "status": 2, "is4k": false}"#).unwrap()
+        };
+        assert_eq!(show.request_status(&only(2)), Status::Processing);
+        assert_eq!(show.request_status(&only(3)), Status::Available);
     }
 
     #[test]

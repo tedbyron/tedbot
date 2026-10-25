@@ -23,8 +23,9 @@ api_key = ''
 public_url = 'https://seerr.example.com'
 # url = 'http://127.0.0.1:5055'
 
-# Radarr and Sonarr, so /request can cancel approved requests that are still
-# downloading. Without them, only requests waiting for approval can be cancelled.
+# Radarr and Sonarr, so /request and /requests can cancel approved requests that
+# are still downloading. Without them, only requests waiting for approval can be
+# cancelled.
 # [radarr]
 # api_key = ''
 # url = 'http://127.0.0.1:7878'

@@ -29,7 +29,7 @@ use crate::{
     Context, Data,
     arr::Removed,
     seerr::{
-        self, Cancellable, Cancelled, Media, Profile, Quotas, Requested, Requester, SearchResult,
+        self, Cancellable, Changed, Media, Profile, Quotas, Requested, Requester, SearchResult,
         Status,
     },
 };
@@ -264,6 +264,9 @@ impl Viewer {
                 .profiles(&data.http, media)
                 .await
                 .inspect_err(|e| warn!("Fetching quality profiles: {e:#}"))
+                .ok()
+                .flatten()
+                .map(|p| p.list)
                 .unwrap_or_default()
         };
         let (quotas, movie_profiles, tv_profiles) = tokio::join!(
@@ -400,10 +403,7 @@ impl Card {
             Media::Tv(_) => &viewer.tv_profiles,
         };
         let can_bypass = limited && viewer.user.is_some_and(Requester::can_bypass_quota);
-        let can_unsend = match media {
-            Media::Movie(_) => data.radarr.is_some(),
-            Media::Tv(_) => data.sonarr.is_some(),
-        };
+        let can_unsend = can_unsend(data, media);
         let cancellable = details
             .cancellable(viewer.user.map(|u| u.id), viewer.admin)
             .into_iter()
@@ -456,84 +456,17 @@ impl Card {
         }
     }
 
-    /// Cancels [`Self::cancellable`]: takes approved ones back out of Radarr or Sonarr,
-    /// downloads included, then deletes them from Seerr. The bot has already checked
-    /// who may cancel what, so Seerr is asked as its admin. Returns what to tell the invoker, and
-    /// whether anything changed.
+    /// Cancels [`Self::cancellable`], returning what to tell the invoker and whether anything
+    /// changed
     async fn cancel(&self, data: &Data) -> (String, bool) {
-        let mut changed = false;
-        match self.try_cancel(data, &mut changed).await {
-            Ok(None) => {
-                let n = self.cancellable.len();
-                let what = if n == 1 {
-                    "the request".to_owned()
-                } else {
-                    format!("{n} requests")
-                };
-                let extra = if self.cancellable.iter().any(|c| c.sent) {
-                    ", downloads included"
-                } else {
-                    ""
-                };
-                let title = escape(&self.title);
-                (format!("Cancelled {what} for **{title}**{extra}"), changed)
-            }
-            Ok(Some(refused)) => (refused, changed),
-            Err(e) => {
-                warn!("Cancelling requests for {}: {e:#}", self.media);
-                (
-                    "Couldn't cancel it, try again in a bit \u{1fae4}".into(),
-                    changed,
-                )
-            }
-        }
-    }
-
-    /// The steps of [`Self::cancel`]. Radarr or Sonarr goes first, so if that fails the request
-    /// is still in Seerr to try again. `Some` is a refusal to tell the invoker: Seerr's, or
-    /// because Radarr or Sonarr already has some of it downloaded, which Seerr may not know yet.
-    async fn try_cancel(&self, data: &Data, changed: &mut bool) -> Result<Option<String>> {
-        let sent: Vec<&Cancellable> = self.cancellable.iter().filter(|c| c.sent).collect();
-        if !sent.is_empty() {
-            let removed = match self.media {
-                Media::Movie(tmdb_id) => {
-                    let radarr = data.radarr.as_ref().context("Radarr isn't configured")?;
-                    radarr
-                        .remove_movie(&data.http, tmdb_id)
-                        .await
-                        .context("Radarr")?
-                }
-                Media::Tv(_) => {
-                    let sonarr = data.sonarr.as_ref().context("Sonarr isn't configured")?;
-                    let tvdb_id = self.tvdb_id.context("Seerr has no TVDB id")?;
-                    let mut seasons: Vec<u32> = sent
-                        .iter()
-                        .flat_map(|c| c.seasons.iter().copied())
-                        .collect();
-                    seasons.sort_unstable();
-                    seasons.dedup();
-                    sonarr
-                        .remove_seasons(&data.http, tvdb_id, &seasons)
-                        .await
-                        .context("Sonarr")?
-                }
-            };
-            if removed == Removed::Downloaded {
-                return Ok(Some(
-                    "It's already been downloaded, so it can't be cancelled".into(),
-                ));
-            }
-            *changed = true;
-        }
-
-        for c in &self.cancellable {
-            match data.seerr.cancel(&data.http, None, c.id).await? {
-                Cancelled::Done => *changed = true,
-                Cancelled::Refused(message) => return Ok(Some(message)),
-            }
-        }
-
-        Ok(None)
+        cancel(
+            data,
+            self.media,
+            self.tvdb_id,
+            &self.title,
+            &self.cancellable,
+        )
+        .await
     }
 
     /// The season menu for shows with more than one open season and the quality menu, then
@@ -654,20 +587,120 @@ impl Card {
     }
 }
 
+/// Cancels `cancellable`, requests for `media` titled `title`: takes approved ones back out of
+/// Radarr or Sonarr, downloads included, then deletes them from Seerr. The caller has already
+/// checked who may cancel what, so Seerr is asked as its admin. Returns what to tell the invoker,
+/// and whether anything changed.
+pub(super) async fn cancel(
+    data: &Data,
+    media: Media,
+    tvdb_id: Option<u32>,
+    title: &str,
+    cancellable: &[Cancellable],
+) -> (String, bool) {
+    let mut changed = false;
+    match try_cancel(data, media, tvdb_id, cancellable, &mut changed).await {
+        Ok(None) => {
+            let n = cancellable.len();
+            let what = if n == 1 {
+                "the request".to_owned()
+            } else {
+                format!("{n} requests")
+            };
+            let extra = if cancellable.iter().any(|c| c.sent) {
+                ", downloads included"
+            } else {
+                ""
+            };
+            let title = escape(title);
+            (format!("Cancelled {what} for **{title}**{extra}"), changed)
+        }
+        Ok(Some(refused)) => (refused, changed),
+        Err(e) => {
+            warn!("Cancelling requests for {media}: {e:#}");
+            (
+                "Couldn't cancel it, try again in a bit \u{1fae4}".into(),
+                changed,
+            )
+        }
+    }
+}
+
+/// The steps of [`cancel`]. Radarr or Sonarr goes first, so if that fails the request is still in
+/// Seerr to try again. `Some` is a refusal to tell the invoker: Seerr's, or because Radarr or
+/// Sonarr already has some of it downloaded, which Seerr may not know yet.
+async fn try_cancel(
+    data: &Data,
+    media: Media,
+    tvdb_id: Option<u32>,
+    cancellable: &[Cancellable],
+    changed: &mut bool,
+) -> Result<Option<String>> {
+    let sent: Vec<&Cancellable> = cancellable.iter().filter(|c| c.sent).collect();
+    if !sent.is_empty() {
+        let removed = match media {
+            Media::Movie(tmdb_id) => {
+                let radarr = data.radarr.as_ref().context("Radarr isn't configured")?;
+                radarr
+                    .remove_movie(&data.http, tmdb_id)
+                    .await
+                    .context("Radarr")?
+            }
+            Media::Tv(_) => {
+                let sonarr = data.sonarr.as_ref().context("Sonarr isn't configured")?;
+                let tvdb_id = tvdb_id.context("Seerr has no TVDB id")?;
+                let mut seasons: Vec<u32> = sent
+                    .iter()
+                    .flat_map(|c| c.seasons.iter().copied())
+                    .collect();
+                seasons.sort_unstable();
+                seasons.dedup();
+                sonarr
+                    .remove_seasons(&data.http, tvdb_id, &seasons)
+                    .await
+                    .context("Sonarr")?
+            }
+        };
+        if removed == Removed::Downloaded {
+            return Ok(Some(
+                "It's already been downloaded, so it can't be cancelled".into(),
+            ));
+        }
+        *changed = true;
+    }
+
+    for c in cancellable {
+        match data.seerr.cancel(&data.http, None, c.id).await? {
+            Changed::Done => *changed = true,
+            Changed::Refused(message) => return Ok(Some(message)),
+        }
+    }
+
+    Ok(None)
+}
+
+/// Whether Radarr or Sonarr is configured for `media`, so approved requests can be taken back out
+pub(super) const fn can_unsend(data: &Data, media: Media) -> bool {
+    match media {
+        Media::Movie(_) => data.radarr.is_some(),
+        Media::Tv(_) => data.sonarr.is_some(),
+    }
+}
+
 /// How a movie or season's status reads on the card
-const fn status(s: Status, auto_approved: bool) -> &'static str {
+pub(super) const fn status(s: Status, auto_approved: bool) -> &'static str {
     match s {
         Status::Missing => "Not requested",
         Status::Pending => "Requested, waiting for approval",
-        Status::Processing if auto_approved => "Automatically approved, not on Jellyfin yet",
-        Status::Processing => "Approved, not on Jellyfin yet",
-        Status::PartiallyAvailable => "Partly on Jellyfin",
-        Status::Available => "On Jellyfin",
+        Status::Processing if auto_approved => "Automatically approved, not downloaded",
+        Status::Processing => "Approved, not downloaded",
+        Status::PartiallyAvailable => "Partly downloaded",
+        Status::Available => "Downloaded",
         Status::Blocklisted => "Blocklisted",
     }
 }
 
-/// One line per status, available first: "On Jellyfin: 1–3, 5". Each season is its number,
+/// One line per status, available first: "Downloaded: 1–3, 5". Each season is its number,
 /// status, and whether it was approved automatically.
 fn season_lines(seasons: &[(u32, Status, bool)]) -> String {
     if seasons.is_empty() {
@@ -699,7 +732,7 @@ fn season_lines(seasons: &[(u32, Status, bool)]) -> String {
 }
 
 /// Ascending numbers with runs collapsed: `[1, 2, 3, 5]` -> "1–3, 5"
-fn ranges(numbers: &[u32]) -> String {
+pub(super) fn ranges(numbers: &[u32]) -> String {
     let mut runs: Vec<(u32, u32)> = Vec::new();
     for &n in numbers {
         match runs.last_mut() {
@@ -720,7 +753,7 @@ fn ranges(numbers: &[u32]) -> String {
 }
 
 /// `s` cut at a word to at most `max` characters, with "…" if anything was cut
-fn truncate(s: &str, max: usize) -> String {
+pub(super) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();
     }
@@ -754,8 +787,8 @@ mod tests {
         ];
         assert_eq!(
             season_lines(&seasons),
-            "On Jellyfin: 1\u{2013}2\nAutomatically approved, not on Jellyfin yet: 3\n\
-             Approved, not on Jellyfin yet: 4\nRequested, waiting for approval: 5\nNot requested: 6"
+            "Downloaded: 1\u{2013}2\nAutomatically approved, not downloaded: 3\n\
+             Approved, not downloaded: 4\nRequested, waiting for approval: 5\nNot requested: 6"
         );
     }
 

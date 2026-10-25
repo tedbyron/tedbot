@@ -4,6 +4,7 @@
 //! the command picker, so keep them short and user-facing.
 
 pub mod request;
+pub mod requests;
 pub mod streams;
 pub mod tv;
 

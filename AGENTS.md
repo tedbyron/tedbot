@@ -81,6 +81,24 @@ store):
   then the movie deleted, or for shows only the request's seasons unmonitored
   (the series goes only if nothing's left). Radarr/Sonarr are checked for files
   first, since Seerr can lag behind, and nothing is touched if any exist.
+- **`/requests`** (done): ephemeral list of requests, newest first, 10 per page
+  with ◀ 🔄 ▶ and an optional status filter. Everyone sees their own (via
+  `requestedBy`, so unlinked users get told to link); bot admins see everyone's.
+  A menu opens one as a card (poster, status, seasons, when, and for admins who
+  requested and approved it and the quality), with ◀ ▶ through the list. Seerr
+  users show as a mention when their `discordIds` account is in the server, like
+  `/streams`, else by Seerr name (looked up once per user per invocation). The
+  card offers Cancel request on the same terms as `/request` (shared code), and
+  for admins on pending requests Approve, Decline, and season and quality menus
+  that edit the request straight away (`PUT /request/{id}`, which Seerr only
+  allows while pending and which resets every field it's not sent, so the rest
+  are sent back as they were). Pending cards also get "Approve all N" when the
+  same requester has other pending requests each made within an hour of the one
+  before; it asks to confirm with the titles listed, then approves them one at a
+  time and lists any that failed. Quality is only editable when the request goes
+  to the default server, whose profiles are the ones the bot knows. Seerr is
+  asked as its admin, so the bot checks `is_admin` itself. Request lists carry
+  no titles, so each row's details are fetched.
 - **`/streams`** (done): ephemeral, since views differ. Everyone gets the stream
   count, upload in use and who's watching. Admins also get what each stream is
   playing, direct play or transcode, and LAN bitrate. Bitrates count unpaused
