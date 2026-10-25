@@ -19,8 +19,8 @@ home media server.
 
 Runs on `teds-mac-mini` (Apple silicon, macOS 27, `aarch64-darwin`). Everything
 is declared in the dotfiles repo at
-`/Users/ted/git/dotfiles/users/ted/modules/media/`, one nix module per service.
-Read those for the source of truth; the table below is a summary.
+`/Users/ted/git/dotfiles/hosts/teds-mac-mini/modules/`, one nix module per
+service. Read those for the source of truth; the table below is a summary.
 
 All services bind to 127.0.0.1 only. The bot runs on the same machine.
 
@@ -54,20 +54,31 @@ store):
   webhook can post requests but can't act on them, so only the bot can do this.
 - **Available channel**: "download complete / available in Jellyfin" posts in
   one channel, pinging the requester if they're linked to the bot. Map Seerr
-  users to Discord via the `discordId` in each Seerr user's notification
+  users to Discord via the `discordIds` in each Seerr user's notification
   settings instead of a separate link table.
 - **`/request <title>`**: search Seerr and return results with poster, year and
   request buttons. For a show, add a dropdown to pick seasons. Lets people
   request without opening request.ted.ooo.
-- **`/playing`**: who's watching what, direct play or transcode, and current
-  total bitrate against the ~370 Mbps upload. From Jellyfin's sessions API.
+- **`/streams`** (done): ephemeral, since views differ. Everyone gets the stream
+  count, upload in use and who's watching. Admins also get what each stream is
+  playing, direct play or transcode, and LAN bitrate. Bitrates count unpaused
+  streams. From Jellyfin's sessions API, with a 🔄 button. Users who set a
+  Discord id in Seerr and are in the server show as a mention (embeds never
+  ping; `GET /api/v1/user` omits settings, so `discordIds` comes from
+  `GET /api/v1/user/{id}`). Bitrate falls back to the source's video plus
+  playing audio track when `TranscodingInfo` is missing (Jellyfin drops it while
+  a transcode is throttled). Clients on private IPs count as LAN; Caddy is a
+  known proxy, so `RemoteEndPoint` is the real client.
 - **`/channel`** (done): one ErsatzTV channel per card with its poster. Keypad
   of channel buttons up to 12 channels, ⌨️ jump-to-channel modal beyond that, ◀
   🔄 ▶ always. **`/channels`**: channels in a single vertical list, 12 per page.
   `/channel` takes an autocompleted `number` option. The guide is cached for 60s
   and indexed by channel so this scales to ~1000 channels. Button presses are
   acknowledged before rebuilding (a guide refetch can exceed Discord's 3s
-  limit), and failures show as ephemeral follow-ups.
+  limit), and failures show as ephemeral follow-ups. Replies are ephemeral;
+  ephemeral messages can only be edited with an interaction token, which expires
+  after 15 minutes, so buttons time out after 14 and are removed with the newest
+  token.
 - **`/upcoming`**: new episodes this week for requested shows, from Sonarr's
   calendar. Could also ping the requester on air day.
 - **Bot metrics**: expose a Prometheus `/metrics` endpoint from the bot (bound
@@ -84,7 +95,9 @@ Seerr and Jellyfin (Webhook plugin) can push events by HTTP POST. If the bot
 listens for webhooks, bind that listener to 127.0.0.1.
 
 Anything that controls qBittorrent, approves requests, or deletes media must be
-restricted to an admin role.
+restricted to admins: `discord.admin_users` or members with `discord.admin_role`
+(`commands::is_admin`). Discord's Administrator permission doesn't count; the
+server's admins aren't necessarily the media server's.
 
 ## Deployment
 
@@ -93,7 +106,7 @@ The bot repo stays free of machine-specific values; dotfiles holds them.
 - This repo should expose a `flake.nix` with `packages.aarch64-darwin.default`
   building the bot.
 - Dotfiles adds it as a flake input and runs it from a launchd user agent in
-  `users/ted/modules/media/tedbot.nix` (`RunAtLoad`, `KeepAlive`, log at
+  `hosts/teds-mac-mini/modules/tedbot.nix` (`RunAtLoad`, `KeepAlive`, log at
   `~/Library/Logs/tedbot.log`), matching the other modules there.
 - Config (token, channel IDs, service URLs) comes from a file or environment
   variables outside the repo and the nix store. The current "read `config.toml`

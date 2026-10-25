@@ -19,6 +19,7 @@ mod commands;
 mod config;
 mod ersatztv;
 mod jellyfin;
+mod seerr;
 
 /// State shared by every command invocation
 #[derive(Debug)]
@@ -29,6 +30,12 @@ pub struct Data {
     guide: ersatztv::GuideCache,
     /// Jellyfin connection info
     jellyfin: jellyfin::Jellyfin,
+    /// Seerr connection info
+    seerr: seerr::Seerr,
+    /// Members with this role count as admins
+    admin_role: Option<serenity::RoleId>,
+    /// Users who count as admins anywhere
+    admin_users: Vec<serenity::UserId>,
 }
 type Context<'a> = poise::Context<'a, Data, Error>;
 type Framework = poise::Framework<Data, Error>;
@@ -59,6 +66,10 @@ async fn run() -> Result<()> {
         !cfg.jellyfin.api_key.is_empty(),
         "{path}: jellyfin.api_key is empty"
     );
+    anyhow::ensure!(
+        !cfg.seerr.api_key.is_empty(),
+        "{path}: seerr.api_key is empty"
+    );
 
     tracing_subscriber::fmt()
         .with_target(false)
@@ -66,7 +77,7 @@ async fn run() -> Result<()> {
             cfg.log_level
                 .as_deref()
                 .and_then(|lvl| lvl.parse().ok())
-                .unwrap_or(Level::INFO),
+                .unwrap_or(Level::WARN),
         )
         .init();
 
@@ -74,6 +85,7 @@ async fn run() -> Result<()> {
         commands: vec![
             commands::channels::channel(),
             commands::channels::channels(),
+            commands::streams::streams(),
         ],
         on_error: |e| Box::pin(on_error(e)),
         pre_command: |ctx| Box::pin(pre_command(ctx)),
@@ -82,6 +94,8 @@ async fn run() -> Result<()> {
     };
 
     let activity = cfg.discord.activity;
+    let admin_role = cfg.discord.admin_role;
+    let admin_users = cfg.discord.admin_users;
     let http = reqwest::Client::new();
     let data = Data {
         guide: ersatztv::GuideCache::new(http.clone(), cfg.ersatztv.url, Duration::from_secs(60)),
@@ -90,6 +104,12 @@ async fn run() -> Result<()> {
             url: cfg.jellyfin.url,
             api_key: cfg.jellyfin.api_key,
         },
+        seerr: seerr::Seerr {
+            url: cfg.seerr.url,
+            api_key: cfg.seerr.api_key,
+        },
+        admin_role,
+        admin_users,
     };
     let framework = Framework::builder()
         .setup(move |ctx, ready, framework| Box::pin(setup(ctx, ready, framework, activity, data)))

@@ -2,27 +2,35 @@
 
 #![allow(clippy::module_name_repetitions)]
 
+use poise::serenity_prelude::{RoleId, UserId};
 use serde::Deserialize;
 
 /// Bot config
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    /// Optional log level: `error`, `warn`, `info` (default), `debug` or `trace`
+    /// Optional log level: `error`, `warn` (default), `info`, `debug` or `trace`
     pub log_level: Option<String>,
-    /// Discord connection settings
+    /// Discord connection info
     pub discord: DiscordConfig,
-    /// Optional ErsatzTV connection settings
+    /// Optional ErsatzTV connection info
     #[serde(default)]
     pub ersatztv: ErsatzTvConfig,
-    /// Jellyfin connection settings
+    /// Jellyfin connection info
     pub jellyfin: JellyfinConfig,
+    /// Seerr connection info
+    pub seerr: SeerrConfig,
 }
 
-/// Discord connection settings
+/// Discord connection info
 #[derive(Debug, Deserialize)]
 pub struct DiscordConfig {
     /// Bot token from the Discord developer portal
     pub token: String,
+    /// Optional role whose members count as admins
+    pub admin_role: Option<RoleId>,
+    /// Users who count as admins anywhere, including DMs
+    #[serde(default)]
+    pub admin_users: Vec<UserId>,
     /// Optional Discord activity
     pub activity: Option<DiscordActivityConfig>,
 }
@@ -40,7 +48,7 @@ pub struct DiscordActivityConfig {
     pub streaming_url: Option<String>,
 }
 
-/// ErsatzTV connection settings
+/// ErsatzTV connection info
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct ErsatzTvConfig {
@@ -56,7 +64,7 @@ impl Default for ErsatzTvConfig {
     }
 }
 
-/// Jellyfin connection settings
+/// Jellyfin connection info
 #[derive(Debug, Deserialize)]
 pub struct JellyfinConfig {
     /// Base URL. Defaults to `http://127.0.0.1:8096`.
@@ -68,4 +76,18 @@ pub struct JellyfinConfig {
 
 fn default_jellyfin_url() -> String {
     "http://127.0.0.1:8096".into()
+}
+
+/// Seerr connection info
+#[derive(Debug, Deserialize)]
+pub struct SeerrConfig {
+    /// Base URL, without `/api/v1`. Defaults to `http://127.0.0.1:5055`.
+    #[serde(default = "default_seerr_url")]
+    pub url: String,
+    /// API key from Settings → General
+    pub api_key: String,
+}
+
+fn default_seerr_url() -> String {
+    "http://127.0.0.1:5055".into()
 }

@@ -1655,6 +1655,7 @@ dependencies = [
  "quick-xml",
  "reqwest",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
  "tracing",

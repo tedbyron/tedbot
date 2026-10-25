@@ -1,6 +1,6 @@
 //! `/channel` and `/channels`: what's on ErsatzTV's live TV channels.
 //!
-//! Both reply with an embed and navigation buttons, then wait for button presses for
+//! Both reply ephemerally with an embed and navigation buttons, then wait for button presses for
 //! [`NAV_TIMEOUT`] before removing the buttons. Each press rebuilds the [`Screen`] from the guide
 //! and edits the same message in place.
 
@@ -15,19 +15,22 @@ use poise::{
         ComponentInteractionCollector, CreateActionRow, CreateAttachment,
         CreateAutocompleteResponse, CreateButton, CreateEmbed, CreateEmbedFooter, CreateInputText,
         CreateInteractionResponse, CreateInteractionResponseFollowup, CreateModal, EditAttachments,
-        EditInteractionResponse, EditMessage, InputTextStyle, ModalInteractionCollector,
-        ReactionType, Timestamp,
+        EditInteractionResponse, InputTextStyle, ModalInteractionCollector, ReactionType,
+        Timestamp,
     },
 };
 use tracing::warn;
 
+use super::escape;
 use crate::{
     Context, Data,
     ersatztv::{Guide, Program},
 };
 
-/// How long buttons keep working after the last press
-const NAV_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// How long buttons keep working after the last press. An ephemeral reply can only be edited with
+/// an interaction token, which expires after 15 minutes, so this stays under that to remove the
+/// buttons at the end.
+const NAV_TIMEOUT: Duration = Duration::from_secs(14 * 60);
 /// Attachment file name the embed thumbnail refers to (`attachment://poster.jpg`)
 const POSTER: &str = "poster.jpg";
 /// Thumbnail height in pixels
@@ -100,7 +103,7 @@ enum Target {
 /// Only presses on this reply are collected. Button and modal ids are prefixed with the
 /// invocation id so concurrent invocations' modals don't collide.
 async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<String>) -> Result<()> {
-    ctx.defer().await?;
+    ctx.defer_ephemeral().await?;
 
     let data = ctx.data();
     let id = ctx.id().to_string();
@@ -122,14 +125,16 @@ async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<String>) -> Result
     if let Some(poster) = screen.poster.take() {
         reply = reply.attachment(poster);
     }
-    let mut message = ctx.send(reply).await?.into_message().await?;
+    let handle = ctx.send(reply).await?;
+    let message = handle.message().await?.id;
+    let mut last = None;
 
     loop {
         // Acknowledge first: rebuilding can refetch the guide and posters, which may take longer
         // than the 3 seconds Discord allows before an interaction fails
         let (token, target) = tokio::select! {
             press = ComponentInteractionCollector::new(ctx)
-                .message_id(message.id)
+                .message_id(message)
                 .timeout(NAV_TIMEOUT)
                 .into_future() => {
                 let Some(press) = press else { break };
@@ -171,6 +176,7 @@ async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<String>) -> Result
             }
         };
 
+        last = Some(token.clone());
         let notice = match Screen::build(data, mode, &target).await {
             Ok(Some(next)) => {
                 screen = next;
@@ -193,9 +199,20 @@ async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<String>) -> Result
             .await?;
     }
 
-    message
-        .edit(ctx, EditMessage::new().components(vec![]))
-        .await?;
+    // The newest token is the only one guaranteed not to have expired
+    match last {
+        Some(token) => {
+            EditInteractionResponse::new()
+                .components(vec![])
+                .execute(ctx, &token)
+                .await?;
+        }
+        None => {
+            handle
+                .edit(ctx, CreateReply::default().components(vec![]))
+                .await?;
+        }
+    }
     Ok(())
 }
 
@@ -497,28 +514,4 @@ fn times(p: &Program) -> String {
 /// A Discord timestamp tag, which each client renders as a short time in its local zone
 fn time<Tz: TimeZone>(t: &DateTime<Tz>) -> String {
     format!("<t:{}:t>", t.timestamp())
-}
-
-/// Backslash-escapes Discord markdown characters so titles show literally
-fn escape(s: &str) -> String {
-    s.chars()
-        .fold(String::with_capacity(s.len()), |mut out, c| {
-            if matches!(c, '\\' | '*' | '_' | '~' | '`' | '|') {
-                out.push('\\');
-            }
-            out.push(c);
-            out
-        })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn surnames() {
-        assert_eq!(surname("Flim Florp"), "Florp");
-        assert_eq!(surname("Zib del Wobble"), "del Wobble");
-        assert_eq!(surname("Quaz"), "Quaz");
-    }
 }

@@ -1,19 +1,26 @@
-# log level: error, warn, info (default), debug or trace
-log_level = 'info'
+# Log level: error, warn (default), info, debug or trace
+# log_level = 'info'
 
 [discord]
 token = ''
+# Admin role id
+# admin_role = 123456789012345678
+# Individual admin users
+# admin_users = ['123456789012345678']
 
-# bot activity (competing [in] || listening [to] || playing || streaming || watching)
+# Bot activity (competing [in] || listening [to] || playing || streaming || watching)
 [discord.activity]
-type = 'listening'
-name = '/commands'
+# type = 'listening'
+# name = '/commands'
 # streaming_url =
 
 [ersatztv]
-url = 'http://127.0.0.1:8409'
+# url = 'http://127.0.0.1:8409'
 
-# required
 [jellyfin]
 url = 'http://127.0.0.1:8096'
+api_key = ''
+
+[seerr]
+url = 'http://127.0.0.1:5055'
 api_key = ''
