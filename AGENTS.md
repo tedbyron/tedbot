@@ -61,11 +61,13 @@ store):
   request without opening request.ted.ooo.
 - **`/playing`**: who's watching what, direct play or transcode, and current
   total bitrate against the ~370 Mbps upload. From Jellyfin's sessions API.
-- **`/live`** (done): one ErsatzTV channel per card with its poster. Keypad of
-  channel buttons up to 12 channels, ⌨️ jump-to-channel modal beyond that, ◀ 🔄
-  ▶ always. **`/live-all`**: channels in a grid, 12 per page. Both take an
-  autocompleted `channel` option. The guide is cached for 60s and indexed by
-  channel so this scales to ~1000 channels.
+- **`/channel`** (done): one ErsatzTV channel per card with its poster. Keypad
+  of channel buttons up to 12 channels, ⌨️ jump-to-channel modal beyond that, ◀
+  🔄 ▶ always. **`/channels`**: channels in a single vertical list, 12 per page.
+  `/channel` takes an autocompleted `number` option. The guide is cached for 60s
+  and indexed by channel so this scales to ~1000 channels. Button presses are
+  acknowledged before rebuilding (a guide refetch can exceed Discord's 3s
+  limit), and failures show as ephemeral follow-ups.
 - **`/upcoming`**: new episodes this week for requested shows, from Sonarr's
   calendar. Could also ping the requester on air day.
 - **Bot metrics**: expose a Prometheus `/metrics` endpoint from the bot (bound

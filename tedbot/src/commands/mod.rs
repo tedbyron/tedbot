@@ -3,7 +3,7 @@ use poise::command;
 
 use crate::Context;
 
-pub mod live;
+pub mod channels;
 
 /// Ping the bot
 #[command(slash_command)]

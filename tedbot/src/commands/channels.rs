@@ -5,11 +5,12 @@ use chrono::{DateTime, TimeZone, Utc};
 use poise::{
     CreateReply, command,
     serenity_prelude::{
-        ActionRowComponent, AutocompleteChoice, ButtonStyle, ComponentInteractionCollector,
-        CreateActionRow, CreateAttachment, CreateAutocompleteResponse, CreateButton, CreateEmbed,
-        CreateEmbedFooter, CreateInputText, CreateInteractionResponse,
-        CreateInteractionResponseMessage, CreateModal, EditMessage, InputTextStyle,
-        ModalInteractionCollector, ReactionType,
+        ActionRowComponent, AutocompleteChoice, Builder as _, ButtonStyle,
+        ComponentInteractionCollector, CreateActionRow, CreateAttachment,
+        CreateAutocompleteResponse, CreateButton, CreateEmbed, CreateEmbedFooter, CreateInputText,
+        CreateInteractionResponse, CreateInteractionResponseFollowup, CreateModal, EditAttachments,
+        EditInteractionResponse, EditMessage, InputTextStyle, ModalInteractionCollector,
+        ReactionType, Timestamp,
     },
 };
 use tracing::warn;
@@ -27,24 +28,19 @@ const PAGE_SIZE: usize = 12;
 
 /// What's on a live TV channel right now
 #[command(slash_command)]
-pub async fn live(
+pub async fn channel(
     ctx: Context<'_>,
     #[description = "Channel number or name"]
     #[autocomplete = "autocomplete_channel"]
-    channel: Option<String>,
+    number: Option<String>,
 ) -> Result<()> {
-    navigate(ctx, Mode::Channel, channel.as_deref()).await
+    navigate(ctx, Mode::Channel, number).await
 }
 
 /// What's on every live TV channel right now
-#[command(slash_command, rename = "live-all")]
-pub async fn live_all(
-    ctx: Context<'_>,
-    #[description = "Start at the page with this channel"]
-    #[autocomplete = "autocomplete_channel"]
-    channel: Option<String>,
-) -> Result<()> {
-    navigate(ctx, Mode::Grid, channel.as_deref()).await
+#[command(slash_command)]
+pub async fn channels(ctx: Context<'_>) -> Result<()> {
+    navigate(ctx, Mode::List, None).await
 }
 
 async fn autocomplete_channel(ctx: Context<'_>, partial: &str) -> CreateAutocompleteResponse {
@@ -70,16 +66,16 @@ async fn autocomplete_channel(ctx: Context<'_>, partial: &str) -> CreateAutocomp
 enum Mode {
     /// One channel per card, `index` is the channel.
     Channel,
-    /// A page of channels, `index` is the page.
-    Grid,
+    /// A page of channels listed top to bottom, `index` is the page.
+    List,
 }
 
-enum Target<'a> {
+enum Target {
     Index(usize),
-    Find(&'a str),
+    Find(String),
 }
 
-async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<&str>) -> Result<()> {
+async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<String>) -> Result<()> {
     ctx.defer().await?;
 
     let data = ctx.data();
@@ -87,11 +83,11 @@ async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<&str>) -> Result<(
     let modal_id = format!("{id}-modal");
     let target = query.map_or(Target::Index(0), Target::Find);
 
-    let Some(mut screen) = Screen::build(data, mode, target).await? else {
-        let content = query.map_or_else(
-            || "No live TV channels right now".to_owned(),
-            |q| format!("No channel matches \"{}\"", escape(q)),
-        );
+    let Some(mut screen) = Screen::build(data, mode, &target).await? else {
+        let content = match &target {
+            Target::Find(q) => no_match(q),
+            Target::Index(_) => "No live TV channels right now".to_owned(),
+        };
         ctx.say(content).await?;
         return Ok(());
     };
@@ -105,7 +101,9 @@ async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<&str>) -> Result<(
     let mut message = ctx.send(reply).await?.into_message().await?;
 
     loop {
-        tokio::select! {
+        // Acknowledge first: rebuilding can refetch the guide and posters, which may take longer
+        // than the 3 seconds Discord allows before an interaction fails.
+        let (token, target) = tokio::select! {
             press = ComponentInteractionCollector::new(ctx)
                 .message_id(message.id)
                 .timeout(NAV_TIMEOUT)
@@ -126,11 +124,8 @@ async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<&str>) -> Result<(
                     },
                     None => continue,
                 };
-                let Some(next) = Screen::build(data, mode, Target::Index(index)).await? else {
-                    break;
-                };
-                screen = next;
-                press.create_response(ctx, screen.update(&id)).await?;
+                press.create_response(ctx, CreateInteractionResponse::Acknowledge).await?;
+                (press.token, Target::Index(index))
             }
             submit = ModalInteractionCollector::new(ctx)
                 .custom_ids(vec![modal_id.clone()])
@@ -147,29 +142,41 @@ async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<&str>) -> Result<(
                         _ => None,
                     })
                     .unwrap_or_default();
-                let found = Screen::build(data, mode, Target::Find(&query)).await?;
-                let response = found.map_or_else(
-                    || {
-                        CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content(format!("No channel matches \"{}\"", escape(&query)))
-                                .ephemeral(true),
-                        )
-                    },
-                    |next| {
-                        screen = next;
-                        screen.update(&id)
-                    },
-                );
-                submit.create_response(ctx, response).await?;
+                submit.create_response(ctx, CreateInteractionResponse::Acknowledge).await?;
+                (submit.token, Target::Find(query))
             }
-        }
+        };
+
+        let notice = match Screen::build(data, mode, &target).await {
+            Ok(Some(next)) => {
+                screen = next;
+                screen.edit(&id).execute(ctx, &token).await?;
+                continue;
+            }
+            Ok(None) => match &target {
+                Target::Find(q) => no_match(q),
+                Target::Index(_) => break,
+            },
+            Err(e) => {
+                warn!("Updating live TV: {e:#}");
+                "Couldn't load the TV guide, try again in a bit \u{1fae4}".to_owned()
+            }
+        };
+        CreateInteractionResponseFollowup::new()
+            .content(notice)
+            .ephemeral(true)
+            .execute(ctx, (None, &token))
+            .await?;
     }
 
     message
         .edit(ctx, EditMessage::new().components(vec![]))
         .await?;
     Ok(())
+}
+
+fn no_match(query: &str) -> String {
+    format!("No channel matches \"{}\"", escape(query))
 }
 
 fn jump_modal(modal_id: &str) -> CreateInteractionResponse {
@@ -195,14 +202,14 @@ struct Screen {
 
 impl Screen {
     /// `None` when there are no channels or `Target::Find` matches nothing.
-    async fn build(data: &Data, mode: Mode, target: Target<'_>) -> Result<Option<Self>> {
+    async fn build(data: &Data, mode: Mode, target: &Target) -> Result<Option<Self>> {
         let guide = data.guide.get().await?;
         let channels = guide.channels.len();
         if channels == 0 {
             return Ok(None);
         }
         let found = match target {
-            Target::Index(position) => Err(position),
+            &Target::Index(position) => Err(position),
             Target::Find(query) => match guide.find(query) {
                 Some(channel) => Ok(channel),
                 None => return Ok(None),
@@ -231,7 +238,8 @@ impl Screen {
 
                 let mut embed = CreateEmbed::new()
                     .title(channel.title())
-                    .description(description);
+                    .description(description)
+                    .timestamp(Timestamp::now());
                 let mut poster = None;
                 if let Some(url) = current.and_then(|p| p.poster_url(POSTER_HEIGHT)) {
                     match Guide::fetch_image(&data.http, &url).await {
@@ -266,7 +274,7 @@ impl Screen {
                     numbers,
                 }))
             }
-            Mode::Grid => {
+            Mode::List => {
                 let pages = channels.div_ceil(PAGE_SIZE);
                 let page = found.map_or_else(|i| i % pages, |i| i / PAGE_SIZE);
                 let mut embed = guide
@@ -274,13 +282,18 @@ impl Screen {
                     .iter()
                     .skip(page * PAGE_SIZE)
                     .take(PAGE_SIZE)
-                    .fold(CreateEmbed::new().title("Live TV"), |embed, channel| {
-                        let value = match guide.on_at(channel, &now) {
-                            (Some(p), _) => format!("{}\n{}", label(p, None), times(p)),
-                            (None, _) => "\u{2014}".into(),
-                        };
-                        embed.field(channel.title(), value, true)
-                    });
+                    .fold(
+                        CreateEmbed::new()
+                            .title("Live TV")
+                            .timestamp(Timestamp::now()),
+                        |embed, channel| {
+                            let value = match guide.on_at(channel, &now) {
+                                (Some(p), _) => format!("{} \u{b7} {}", label(p, None), times(p)),
+                                (None, _) => "\u{2014}".into(),
+                            };
+                            embed.field(channel.title(), value, false)
+                        },
+                    );
                 if pages > 1 {
                     embed = embed.footer(CreateEmbedFooter::new(format!(
                         "Page {} of {pages}",
@@ -300,13 +313,17 @@ impl Screen {
         }
     }
 
-    fn update(&mut self, id: &str) -> CreateInteractionResponse {
-        CreateInteractionResponse::UpdateMessage(
-            CreateInteractionResponseMessage::new()
-                .components(self.components(id))
-                .embed(std::mem::take(&mut self.embed))
-                .files(self.poster.take()),
-        )
+    /// Replaces the message's embed, buttons and poster, dropping the old poster.
+    fn edit(&mut self, id: &str) -> EditInteractionResponse {
+        let attachments = self
+            .poster
+            .take()
+            .into_iter()
+            .fold(EditAttachments::new(), EditAttachments::add);
+        EditInteractionResponse::new()
+            .components(self.components(id))
+            .embed(std::mem::take(&mut self.embed))
+            .attachments(attachments)
     }
 
     /// A keypad of channel numbers in rows of 3 when there are few channels, then ◀ 🔄 ▶,

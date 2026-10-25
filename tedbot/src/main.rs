@@ -57,8 +57,8 @@ async fn run() -> Result<()> {
     let options = FrameworkOptions {
         commands: vec![
             commands::ping(),
-            commands::live::live(),
-            commands::live::live_all(),
+            commands::channels::channel(),
+            commands::channels::channels(),
         ],
         on_error: |e| Box::pin(on_error(e)),
         pre_command: |ctx| Box::pin(pre_command(ctx)),
@@ -122,6 +122,7 @@ async fn setup(
     data: Data,
 ) -> Result<Data> {
     register_globally(ctx, &framework.options().commands).await?;
+    clear_guild_commands(ctx, ready).await;
 
     info!(
         "{} available in {} servers",
@@ -135,6 +136,30 @@ async fn setup(
     }
 
     Ok(data)
+}
+
+/// Commands are registered globally; remove guild-scoped ones left over from older versions,
+/// which Discord keeps showing until they're deleted.
+async fn clear_guild_commands(ctx: &serenity::Context, ready: &serenity::Ready) {
+    for guild in &ready.guilds {
+        let stale = match guild.id.get_commands(ctx).await {
+            Ok(commands) if commands.is_empty() => continue,
+            Ok(commands) => commands,
+            Err(e) => {
+                warn!("Listing commands in guild {}: {e}", guild.id);
+                continue;
+            }
+        };
+        let names: Vec<&str> = stale.iter().map(|c| c.name.as_str()).collect();
+        match guild.id.set_commands(ctx, Vec::new()).await {
+            Ok(_) => info!(
+                "Removed stale commands in guild {}: {}",
+                guild.id,
+                names.join(", ")
+            ),
+            Err(e) => warn!("Removing stale commands in guild {}: {e}", guild.id),
+        }
+    }
 }
 
 fn invite_url(ready: &serenity::Ready) -> String {
