@@ -1,3 +1,9 @@
+//! `/channel` and `/channels`: what's on ErsatzTV's live TV channels.
+//!
+//! Both reply with an embed and navigation buttons, then wait for button presses for
+//! [`NAV_TIMEOUT`] before removing the buttons. Each press rebuilds the [`Screen`] from the guide
+//! and edits the same message in place.
+
 use std::time::Duration;
 
 use anyhow::Result;
@@ -20,10 +26,15 @@ use crate::{
     ersatztv::{Guide, Program},
 };
 
+/// How long buttons keep working after the last press
 const NAV_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Attachment file name the embed thumbnail refers to (`attachment://poster.jpg`)
 const POSTER: &str = "poster.jpg";
+/// Thumbnail height in pixels
 const POSTER_HEIGHT: u32 = 160;
+/// Most channels that get a keypad; beyond this, ⌨️ opens a jump-to-channel modal instead
 const KEYPAD_MAX: usize = 12;
+/// Channels per page of `/channels`. Discord allows at most 25 fields per embed.
 const PAGE_SIZE: usize = 12;
 
 /// What's on a live TV channel right now
@@ -43,6 +54,9 @@ pub async fn channels(ctx: Context<'_>) -> Result<()> {
     navigate(ctx, Mode::List, None).await
 }
 
+/// Suggests up to 25 channels (Discord's limit) by title, filling in the channel number so
+/// [`crate::ersatztv::Guide::find`] matches it exactly. An unreachable guide gives no suggestions
+/// rather than an error.
 async fn autocomplete_channel(ctx: Context<'_>, partial: &str) -> CreateAutocompleteResponse {
     let choices = match ctx.data().guide.get().await {
         Ok(guide) => guide
@@ -62,19 +76,29 @@ async fn autocomplete_channel(ctx: Context<'_>, partial: &str) -> CreateAutocomp
     CreateAutocompleteResponse::new().set_choices(choices)
 }
 
+/// Which command is running, and so how [`Screen::index`] is read
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    /// One channel per card, `index` is the channel.
+    /// One channel per card, `index` is the channel
     Channel,
-    /// A page of channels listed top to bottom, `index` is the page.
+    /// A page of channels listed top to bottom, `index` is the page
     List,
 }
 
+/// What to show next
 enum Target {
+    /// A channel or page by position. Wraps around, so ◀ on the first goes to the last.
     Index(usize),
+    /// The channel matching what the user typed (see [`crate::ersatztv::Guide::find`]), or in
+    /// list mode, the page containing it
     Find(String),
 }
 
+/// Sends the first screen, then handles button presses and jump-modal submits until
+/// [`NAV_TIMEOUT`] passes with no interaction, and finally removes the buttons.
+///
+/// Only presses on this reply are collected. Button and modal ids are prefixed with the
+/// invocation id so concurrent invocations' modals don't collide.
 async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<String>) -> Result<()> {
     ctx.defer().await?;
 
@@ -102,7 +126,7 @@ async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<String>) -> Result
 
     loop {
         // Acknowledge first: rebuilding can refetch the guide and posters, which may take longer
-        // than the 3 seconds Discord allows before an interaction fails.
+        // than the 3 seconds Discord allows before an interaction fails
         let (token, target) = tokio::select! {
             press = ComponentInteractionCollector::new(ctx)
                 .message_id(message.id)
@@ -175,10 +199,12 @@ async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<String>) -> Result
     Ok(())
 }
 
+/// Reply when [`Target::Find`] matches nothing
 fn no_match(query: &str) -> String {
     format!("No channel matches \"{}\"", escape(query))
 }
 
+/// The ⌨️ jump-to-channel popup, with one text box for a channel number or name
 fn jump_modal(modal_id: &str) -> CreateInteractionResponse {
     CreateInteractionResponse::Modal(CreateModal::new(modal_id, "Jump to channel").components(
         vec![
@@ -190,18 +216,28 @@ fn jump_modal(modal_id: &str) -> CreateInteractionResponse {
     ))
 }
 
+/// One rendered view: the embed and poster to show, plus where we are so the buttons know where
+/// to go next
 struct Screen {
     mode: Mode,
+    /// Taken (left empty) when sent
     embed: CreateEmbed,
+    /// Current program's poster, `/channel` only. Taken when sent.
     poster: Option<CreateAttachment>,
+    /// The channel (`/channel`) or page (`/channels`) shown
     index: usize,
+    /// Number of channels or pages, for wrapping ◀ ▶
     count: usize,
-    /// Channel numbers for the keypad, empty when there are too many channels for one.
+    /// Channel numbers for the keypad, empty when there are too many channels for one
     numbers: Vec<String>,
 }
 
 impl Screen {
-    /// `None` when there are no channels or `Target::Find` matches nothing.
+    /// Renders `target` from the current guide. For `/channel`, also fetches the poster and the
+    /// movie director, best effort: failures are logged and the card is shown without them.
+    ///
+    /// `None` when there are no channels or `Target::Find` matches nothing. Errors only if the
+    /// guide can't be fetched.
     async fn build(data: &Data, mode: Mode, target: &Target) -> Result<Option<Self>> {
         let guide = data.guide.get().await?;
         let channels = guide.channels.len();
@@ -313,7 +349,7 @@ impl Screen {
         }
     }
 
-    /// Replaces the message's embed, buttons and poster, dropping the old poster.
+    /// Replaces the message's embed, buttons and poster, dropping the old poster
     fn edit(&mut self, id: &str) -> EditInteractionResponse {
         let attachments = self
             .poster
@@ -327,7 +363,7 @@ impl Screen {
     }
 
     /// A keypad of channel numbers in rows of 3 when there are few channels, then ◀ 🔄 ▶,
-    /// with ⌨️ to type a channel when there are too many for a keypad.
+    /// with ⌨️ to type a channel when there are too many for a keypad
     fn components(&self, id: &str) -> Vec<CreateActionRow> {
         let button = |suffix: &str| CreateButton::new(format!("{id}-{suffix}"));
         let mut rows = Vec::new();
@@ -397,13 +433,14 @@ impl Screen {
     }
 }
 
+/// Surname of a movie's first director, from Jellyfin. `None` for episodes, or if the lookup
+/// fails.
 async fn director(data: &Data, p: &Program) -> Option<String> {
     if p.episode().is_some() {
         return None;
     }
-    let jellyfin = data.jellyfin.as_ref()?;
     let id = p.jellyfin_item_id()?;
-    match jellyfin.directors(&data.http, id).await {
+    match data.jellyfin.directors(&data.http, id).await {
         Ok(directors) => directors.first().map(|name| surname(name)),
         Err(e) => {
             warn!("Fetching directors for {id}: {e:#}");
@@ -412,7 +449,8 @@ async fn director(data: &Data, p: &Program) -> Option<String> {
     }
 }
 
-/// Keycap emoji for 0-10 so number buttons match the width of the emoji nav buttons.
+/// Keycap emoji for 0-10 so number buttons match the width of the emoji nav buttons. `None` for
+/// other numbers, in which case the whole keypad falls back to text labels.
 fn keycap(number: &str) -> Option<ReactionType> {
     match number {
         "10" => Some('\u{1f51f}'.into()),
@@ -423,7 +461,7 @@ fn keycap(number: &str) -> Option<ReactionType> {
     }
 }
 
-/// "Guillermo del Toro" -> "del Toro".
+/// The last name plus any lowercase particles before it: "Guillermo del Toro" -> "del Toro"
 fn surname(name: &str) -> String {
     let words: Vec<&str> = name.split_whitespace().collect();
     let Some((_, rest)) = words.split_last() else {
@@ -437,7 +475,7 @@ fn surname(name: &str) -> String {
     words[rest.len() - particles..].join(" ")
 }
 
-/// **Title** S01 E02, or **Title** (Director, 1995) for movies.
+/// **Title** S01 E02, or **Title** (Director, 1995) for movies
 fn label(p: &Program, director: Option<&str>) -> String {
     let title = format!("**{}**", escape(&p.title.value));
     if let Some(episode) = p.episode() {
@@ -451,14 +489,17 @@ fn label(p: &Program, director: Option<&str>) -> String {
     }
 }
 
+/// "7:00 PM – 8:30 PM" in each viewer's own time zone
 fn times(p: &Program) -> String {
     format!("{} \u{2013} {}", time(&p.start), time(&p.stop))
 }
 
+/// A Discord timestamp tag, which each client renders as a short time in its local zone
 fn time<Tz: TimeZone>(t: &DateTime<Tz>) -> String {
     format!("<t:{}:t>", t.timestamp())
 }
 
+/// Backslash-escapes Discord markdown characters so titles show literally
 fn escape(s: &str) -> String {
     s.chars()
         .fold(String::with_capacity(s.len()), |mut out, c| {

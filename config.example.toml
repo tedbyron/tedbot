@@ -1,4 +1,4 @@
-# log level (ERROR < WARNING < INFO <= DEBUG < TRACE)
+# log level: error, warn, info (default), debug or trace
 log_level = 'info'
 
 [discord]
@@ -13,6 +13,7 @@ name = '/commands'
 [ersatztv]
 url = 'http://127.0.0.1:8409'
 
+# required
 [jellyfin]
 url = 'http://127.0.0.1:8096'
 api_key = ''

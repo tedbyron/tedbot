@@ -1,3 +1,8 @@
+//! tedbot, a Discord bot for Ted's home media server.
+//!
+//! Reads its config (see `config.example.toml`), registers the slash commands in [`commands`]
+//! globally, and runs until the gateway connection fails.
+
 #![warn(clippy::all, clippy::nursery, rust_2018_idioms)]
 
 use std::{env, fs, process, time::Duration};
@@ -15,16 +20,21 @@ mod config;
 mod ersatztv;
 mod jellyfin;
 
+/// State shared by every command invocation
 #[derive(Debug)]
 pub struct Data {
+    /// One HTTP client for all upstream services, so connections are pooled
     http: reqwest::Client,
+    /// ErsatzTV's XMLTV guide, refetched at most once a minute
     guide: ersatztv::GuideCache,
-    jellyfin: Option<jellyfin::Jellyfin>,
+    /// Jellyfin connection info
+    jellyfin: jellyfin::Jellyfin,
 }
 type Context<'a> = poise::Context<'a, Data, Error>;
 type Framework = poise::Framework<Data, Error>;
 type FrameworkError<'a> = poise::FrameworkError<'a, Data, Error>;
 
+/// Runs the bot, exiting with status 1 and the error chain if it stops
 #[tokio::main]
 async fn main() {
     process::exit(match run().await {
@@ -37,12 +47,18 @@ async fn main() {
     });
 }
 
+/// Loads the config from `$TEDBOT_CONFIG` (default `config.toml`), sets up logging, and runs the
+/// Discord client. Only returns on a startup or gateway error.
 async fn run() -> Result<()> {
     let path = env::var("TEDBOT_CONFIG").unwrap_or_else(|_| "config.toml".into());
     let cfg = toml::from_str::<config::Config>(
         &fs::read_to_string(&path).with_context(|| format!("reading {path}"))?,
     )
     .with_context(|| format!("parsing {path}"))?;
+    anyhow::ensure!(
+        !cfg.jellyfin.api_key.is_empty(),
+        "{path}: jellyfin.api_key is empty"
+    );
 
     tracing_subscriber::fmt()
         .with_target(false)
@@ -56,7 +72,6 @@ async fn run() -> Result<()> {
 
     let options = FrameworkOptions {
         commands: vec![
-            commands::ping(),
             commands::channels::channel(),
             commands::channels::channels(),
         ],
@@ -71,10 +86,10 @@ async fn run() -> Result<()> {
     let data = Data {
         guide: ersatztv::GuideCache::new(http.clone(), cfg.ersatztv.url, Duration::from_secs(60)),
         http,
-        jellyfin: cfg.jellyfin.map(|j| jellyfin::Jellyfin {
-            url: j.url,
-            api_key: j.api_key,
-        }),
+        jellyfin: jellyfin::Jellyfin {
+            url: cfg.jellyfin.url,
+            api_key: cfg.jellyfin.api_key,
+        },
     };
     let framework = Framework::builder()
         .setup(move |ctx, ready, framework| Box::pin(setup(ctx, ready, framework, activity, data)))
@@ -90,6 +105,8 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
+/// Logs the error and tells the user something went wrong, visible only to them. Error details
+/// stay in the log.
 async fn on_error(err: FrameworkError<'_>) {
     let reply = |content| CreateReply::default().ephemeral(true).content(content);
     if let poise::FrameworkError::Command { error, ctx, .. } = err {
@@ -103,16 +120,20 @@ async fn on_error(err: FrameworkError<'_>) {
     }
 }
 
+/// Logs who ran which command
 #[tracing::instrument(skip_all)]
 async fn pre_command(ctx: Context<'_>) {
     info!("{} used `{}`", ctx.author().name, ctx.invocation_string());
 }
 
+/// Ignores commands from other bots
 #[allow(clippy::unused_async)]
 async fn command_check(ctx: Context<'_>) -> Result<bool> {
     Ok(!ctx.author().bot)
 }
 
+/// Runs once the gateway is ready: registers commands, logs the invite link, and sets the
+/// activity. Returns the shared [`Data`] for poise to hand to commands.
 #[tracing::instrument(skip_all)]
 async fn setup(
     ctx: &serenity::Context,
@@ -139,7 +160,7 @@ async fn setup(
 }
 
 /// Commands are registered globally; remove guild-scoped ones left over from older versions,
-/// which Discord keeps showing until they're deleted.
+/// which Discord keeps showing until they're deleted
 async fn clear_guild_commands(ctx: &serenity::Context, ready: &serenity::Ready) {
     for guild in &ready.guilds {
         let stale = match guild.id.get_commands(ctx).await {
@@ -162,6 +183,7 @@ async fn clear_guild_commands(ctx: &serenity::Context, ready: &serenity::Ready) 
     }
 }
 
+/// OAuth link that adds the bot to a server with the permissions its commands need
 fn invite_url(ready: &serenity::Ready) -> String {
     let permissions = Permissions::ADD_REACTIONS
         | Permissions::READ_MESSAGE_HISTORY
@@ -174,6 +196,9 @@ fn invite_url(ready: &serenity::Ready) -> String {
     )
 }
 
+/// Sets the bot's status ("Listening to /commands") from `[discord.activity]`. Logs a warning
+/// and sets nothing if a streaming activity has no valid `streaming_url`. An unknown `type`, or a
+/// missing `type` or `name` sets nothing.
 #[tracing::instrument(skip_all)]
 fn activity(ctx: &serenity::Context, cfg: &config::DiscordActivityConfig) {
     let activity = match (cfg.r#type.as_deref(), cfg.name.as_deref()) {
