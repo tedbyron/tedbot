@@ -58,9 +58,29 @@ store):
   one channel, pinging the requester if they're linked to the bot. Map Seerr
   users to Discord via the `discordIds` in each Seerr user's notification
   settings instead of a separate link table.
-- **`/request <title>`**: search Seerr and return results with poster, year and
-  request buttons. For a show, add a dropdown to pick seasons. Lets people
-  request without opening request.ted.ooo.
+- **`/request <title>`** (done): search Seerr, one ephemeral card per result
+  with poster, year, overview and status, ◀ ▶ through results, and a Request
+  button. Shows get a season dropdown (no pick means all open seasons; Discord
+  caps it at 25 options). Autocomplete fills in `movie:<id>` or `tv:<id>`.
+  Requests are made with `X-API-User` as the Seerr user whose `discordIds` match
+  the invoker, so Seerr's own permissions, quotas and auto-approve apply;
+  unlinked users see a disabled button. Seerr rejects search queries with any
+  unencoded reserved character (even `+`), so the query is percent-encoded by
+  hand. Seerr's API will make a new request for an available movie, so only show
+  Request when the status is missing. `seerr.public_url` links the title to the
+  Seerr page. Users with Seerr's Manage Requests or Advanced Requests get a
+  quality profile dropdown (default server's profiles; nothing picked lets Seerr
+  choose, which handles anime). Seerr doesn't check permissions on `profileId`,
+  so the bot must. Users with Manage Requests and a quota get a "Request, bypass
+  quota" button (`ignoreQuota`); Manage Users means no quota at all. A "Cancel
+  request" button shows while a request is waiting for approval or approved but
+  not downloaded yet, not even in part: requesters for their own, bot admins
+  (`is_admin`) for anyone's. The bot checks this itself and asks Seerr as its
+  admin. Approved requests come out of Radarr/Sonarr directly (`arr.rs`,
+  optional `[radarr]`/`[sonarr]` config): queue items removed from qBittorrent,
+  then the movie deleted, or for shows only the request's seasons unmonitored
+  (the series goes only if nothing's left). Radarr/Sonarr are checked for files
+  first, since Seerr can lag behind, and nothing is touched if any exist.
 - **`/streams`** (done): ephemeral, since views differ. Everyone gets the stream
   count, upload in use and who's watching. Admins also get what each stream is
   playing, direct play or transcode, and LAN bitrate. Bitrates count unpaused

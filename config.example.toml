@@ -14,13 +14,24 @@ token = ''
 # name = '/commands'
 # streaming_url =
 
-[ersatztv]
-# url = 'http://127.0.0.1:8409'
-
 [jellyfin]
-url = 'http://127.0.0.1:8096'
 api_key = ''
+# url = 'http://127.0.0.1:8096'
 
 [seerr]
-url = 'http://127.0.0.1:5055'
 api_key = ''
+public_url = 'https://seerr.example.com'
+# url = 'http://127.0.0.1:5055'
+
+# Radarr and Sonarr, so /request can cancel approved requests that are still
+# downloading. Without them, only requests waiting for approval can be cancelled.
+# [radarr]
+# api_key = ''
+# url = 'http://127.0.0.1:7878'
+
+# [sonarr]
+# api_key = ''
+# url = 'http://127.0.0.1:8989'
+
+# [ersatztv]
+# url = 'http://127.0.0.1:8409'

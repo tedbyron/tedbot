@@ -15,6 +15,7 @@ use poise::{
 };
 use tracing::{Level, error, info, warn};
 
+mod arr;
 mod commands;
 mod config;
 mod ersatztv;
@@ -32,6 +33,10 @@ pub struct Data {
     jellyfin: jellyfin::Jellyfin,
     /// Seerr connection info
     seerr: seerr::Seerr,
+    /// Radarr connection info, if configured
+    radarr: Option<arr::Arr>,
+    /// Sonarr connection info, if configured
+    sonarr: Option<arr::Arr>,
     /// Members with this role count as admins
     admin_role: Option<serenity::RoleId>,
     /// Users who count as admins anywhere
@@ -82,7 +87,11 @@ async fn run() -> Result<()> {
         .init();
 
     let options = FrameworkOptions {
-        commands: vec![commands::streams::streams(), commands::tv::tv()],
+        commands: vec![
+            commands::request::request(),
+            commands::streams::streams(),
+            commands::tv::tv(),
+        ],
         on_error: |e| Box::pin(on_error(e)),
         pre_command: |ctx| Box::pin(pre_command(ctx)),
         command_check: Some(|ctx| Box::pin(command_check(ctx))),
@@ -103,7 +112,16 @@ async fn run() -> Result<()> {
         seerr: seerr::Seerr {
             url: cfg.seerr.url,
             api_key: cfg.seerr.api_key,
+            public_url: cfg.seerr.public_url,
         },
+        radarr: cfg.radarr.map(|c| arr::Arr {
+            url: c.url,
+            api_key: c.api_key,
+        }),
+        sonarr: cfg.sonarr.map(|c| arr::Arr {
+            url: c.url,
+            api_key: c.api_key,
+        }),
         admin_role,
         admin_users,
     };

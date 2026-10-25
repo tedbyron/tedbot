@@ -32,7 +32,7 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(14 * 60);
 /// Discord allows at most 25 fields per embed
 const MAX_FIELDS: usize = 25;
 
-/// How many streams are playing on Jellyfin
+/// Who's streaming from the Jellyfin server
 #[command(slash_command)]
 pub async fn streams(ctx: Context<'_>) -> Result<()> {
     ctx.defer_ephemeral().await?;
