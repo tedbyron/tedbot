@@ -336,9 +336,7 @@ impl Screen {
                     .skip(page * PAGE_SIZE)
                     .take(PAGE_SIZE)
                     .fold(
-                        CreateEmbed::new()
-                            .title("Live TV")
-                            .timestamp(Timestamp::now()),
+                        CreateEmbed::new().timestamp(Timestamp::now()),
                         |embed, channel| {
                             let value = match guide.on_at(channel, &now) {
                                 (Some(p), _) => format!("{} \u{b7} {}", label(p, None), times(p)),

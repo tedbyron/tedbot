@@ -101,7 +101,7 @@ pub async fn streams(ctx: Context<'_>) -> Result<()> {
 async fn embed(ctx: Context<'_>, admin: bool) -> Result<CreateEmbed> {
     let data = ctx.data();
     let mut sessions = data.jellyfin.playing(&data.http).await?;
-    let embed = CreateEmbed::new().title("Streams");
+    let embed = CreateEmbed::new();
     let count = match sessions.len() {
         0 => return Ok(embed.description("Nothing playing")),
         1 => "1 stream".to_owned(),
