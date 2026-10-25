@@ -1,6 +1,6 @@
-//! `/channel` and `/channels`: what's on ErsatzTV's live TV channels.
+//! `/tv`: what's on ErsatzTV's live TV channels, as a list of every channel or one channel's card.
 //!
-//! Both reply ephemerally with an embed and navigation buttons, then wait for button presses for
+//! Both views reply ephemerally with an embed and navigation buttons, then wait for button presses for
 //! [`NAV_TIMEOUT`] before removing the buttons. Each press rebuilds the [`Screen`] from the guide
 //! and edits the same message in place.
 
@@ -37,24 +37,23 @@ const POSTER: &str = "poster.jpg";
 const POSTER_HEIGHT: u32 = 160;
 /// Most channels that get a keypad; beyond this, ⌨️ opens a jump-to-channel modal instead
 const KEYPAD_MAX: usize = 12;
-/// Channels per page of `/channels`. Discord allows at most 25 fields per embed.
+/// Channels per page of the channel list. Discord allows at most 25 fields per embed.
 const PAGE_SIZE: usize = 12;
 
-/// What's on a live TV channel right now
+/// What's on live TV right now
 #[command(slash_command)]
-pub async fn channel(
+pub async fn tv(
     ctx: Context<'_>,
     #[description = "Channel number or name"]
     #[autocomplete = "autocomplete_channel"]
-    number: Option<String>,
+    channel: Option<String>,
 ) -> Result<()> {
-    navigate(ctx, Mode::Channel, number).await
-}
-
-/// What's on every live TV channel right now
-#[command(slash_command)]
-pub async fn channels(ctx: Context<'_>) -> Result<()> {
-    navigate(ctx, Mode::List, None).await
+    let mode = if channel.is_some() {
+        Mode::Channel
+    } else {
+        Mode::List
+    };
+    navigate(ctx, mode, channel).await
 }
 
 /// Suggests up to 25 channels (Discord's limit) by title, filling in the channel number so
@@ -79,7 +78,7 @@ async fn autocomplete_channel(ctx: Context<'_>, partial: &str) -> CreateAutocomp
     CreateAutocompleteResponse::new().set_choices(choices)
 }
 
-/// Which command is running, and so how [`Screen::index`] is read
+/// Which view is showing, and so how [`Screen::index`] is read
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     /// One channel per card, `index` is the channel
@@ -239,9 +238,9 @@ struct Screen {
     mode: Mode,
     /// Taken (left empty) when sent
     embed: CreateEmbed,
-    /// Current program's poster, `/channel` only. Taken when sent.
+    /// Current program's poster, channel view only. Taken when sent.
     poster: Option<CreateAttachment>,
-    /// The channel (`/channel`) or page (`/channels`) shown
+    /// The channel or page shown
     index: usize,
     /// Number of channels or pages, for wrapping ◀ ▶
     count: usize,
@@ -250,7 +249,7 @@ struct Screen {
 }
 
 impl Screen {
-    /// Renders `target` from the current guide. For `/channel`, also fetches the poster and the
+    /// Renders `target` from the current guide. For a channel, also fetches the poster and the
     /// movie director, best effort: failures are logged and the card is shown without them.
     ///
     /// `None` when there are no channels or `Target::Find` matches nothing. Errors only if the

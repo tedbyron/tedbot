@@ -71,16 +71,15 @@ store):
   playing audio track when `TranscodingInfo` is missing (Jellyfin drops it while
   a transcode is throttled). Clients on private IPs count as LAN; Caddy is a
   known proxy, so `RemoteEndPoint` is the real client.
-- **`/channel`** (done): one ErsatzTV channel per card with its poster. Keypad
-  of channel buttons up to 12 channels, ⌨️ jump-to-channel modal beyond that, ◀
-  🔄 ▶ always. **`/channels`**: channels in a single vertical list, 12 per page.
-  `/channel` takes an autocompleted `number` option. The guide is cached for 60s
-  and indexed by channel so this scales to ~1000 channels. Button presses are
-  acknowledged before rebuilding (a guide refetch can exceed Discord's 3s
-  limit), and failures show as ephemeral follow-ups. Replies are ephemeral;
-  ephemeral messages can only be edited with an interaction token, which expires
-  after 15 minutes, so buttons time out after 14 and are removed with the newest
-  token.
+- **`/tv`** (done): ErsatzTV channels in a single vertical list, 12 per page.
+  With the autocompleted `channel` option, one channel per card with its poster
+  instead: keypad of channel buttons up to 12 channels, ⌨️ jump-to-channel modal
+  beyond that, ◀ 🔄 ▶ always. The guide is cached for 60s and indexed by channel
+  so this scales to ~1000 channels. Button presses are acknowledged before
+  rebuilding (a guide refetch can exceed Discord's 3s limit), and failures show
+  as ephemeral follow-ups. Replies are ephemeral; ephemeral messages can only be
+  edited with an interaction token, which expires after 15 minutes, so buttons
+  time out after 14 and are removed with the newest token.
 - **`/upcoming`**: new episodes this week for requested shows, from Sonarr's
   calendar. Could also ping the requester on air day.
 - **Bot metrics**: expose a Prometheus `/metrics` endpoint from the bot (bound

@@ -3,8 +3,8 @@
 //! A command's `///` doc comment and its parameters' `#[description]`s are what Discord shows in
 //! the command picker, so keep them short and user-facing.
 
-pub mod channels;
 pub mod streams;
+pub mod tv;
 
 use crate::Context;
 

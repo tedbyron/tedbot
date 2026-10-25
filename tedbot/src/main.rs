@@ -82,11 +82,7 @@ async fn run() -> Result<()> {
         .init();
 
     let options = FrameworkOptions {
-        commands: vec![
-            commands::channels::channel(),
-            commands::channels::channels(),
-            commands::streams::streams(),
-        ],
+        commands: vec![commands::streams::streams(), commands::tv::tv()],
         on_error: |e| Box::pin(on_error(e)),
         pre_command: |ctx| Box::pin(pre_command(ctx)),
         command_check: Some(|ctx| Box::pin(command_check(ctx))),
