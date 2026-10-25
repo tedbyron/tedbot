@@ -126,14 +126,17 @@ pub async fn request(
             (Some(Action::Request { bypass }), Some(user)) => {
                 Some(card.request(data, user.id, bypass).await)
             }
-            (Some(Action::Cancel), _) => Some(card.cancel(data).await),
+            (Some(Action::Cancel), _) => {
+                let (notice, changed) = card.cancel(data).await;
+                Some((Some(notice), changed))
+            }
             _ => None,
         };
         // Both use up or give back quota
         if let (Some((_, true)), Some(user)) = (&done, user) {
             viewer.quotas = Viewer::quotas(data, user).await;
         }
-        let mut notice = done.map(|(notice, _)| notice);
+        let mut notice = done.and_then(|(notice, _)| notice);
         match Card::build(data, &results, index, &viewer).await {
             Ok(next) => {
                 card = next;
@@ -343,19 +346,20 @@ impl Card {
         let blocked = details.status() == Status::Blocklisted;
         let (kind, requestable, open) = match media {
             Media::Movie(_) => {
-                embed = embed.field("Status", status(details.status()), false);
+                let label = status(details.status(), details.auto_approved(None));
+                embed = embed.field("Status", label, false);
                 ("Movie", details.status() == Status::Missing, Vec::new())
             }
             Media::Tv(_) => {
-                let seasons: Vec<(u32, Status)> = details
+                let seasons: Vec<(u32, Status, bool)> = details
                     .season_numbers()
-                    .map(|n| (n, details.season_status(n)))
+                    .map(|n| (n, details.season_status(n), details.auto_approved(Some(n))))
                     .collect();
                 embed = embed.field("Seasons", season_lines(&seasons), false);
                 let open: Vec<u32> = seasons
                     .iter()
-                    .filter(|&&(_, s)| s == Status::Missing)
-                    .map(|&(n, _)| n)
+                    .filter(|&&(_, s, _)| s == Status::Missing)
+                    .map(|&(n, ..)| n)
                     .collect();
                 ("TV show", !blocked && !open.is_empty(), open)
             }
@@ -426,9 +430,9 @@ impl Card {
     }
 
     /// Requests the movie, or the picked seasons, as Seerr user `user` with the picked quality,
-    /// skipping their quota if `bypass` and they may. Returns what to tell the invoker, and
-    /// whether the request was made.
-    async fn request(&self, data: &Data, user: u32, bypass: bool) -> (String, bool) {
+    /// skipping their quota if `bypass` and they may. Returns what to tell the invoker, if
+    /// anything (a request made shows on the card), and whether the request was made.
+    async fn request(&self, data: &Data, user: u32, bypass: bool) -> (Option<String>, bool) {
         let options = seerr::Options {
             seasons: if self.picked.is_empty() {
                 &self.open
@@ -443,24 +447,11 @@ impl Card {
             .request(&data.http, user, self.media, &options)
             .await
         {
-            Ok(Requested::Made { approved: true }) => (
-                format!(
-                    "Requested **{}** \u{b7} automatically approved",
-                    escape(&self.title)
-                ),
-                true,
-            ),
-            Ok(Requested::Made { approved: false }) => (
-                format!(
-                    "Requested **{}** \u{b7} waiting for approval",
-                    escape(&self.title)
-                ),
-                true,
-            ),
-            Ok(Requested::Refused(message)) => (message, false),
+            Ok(Requested::Made) => (None, true),
+            Ok(Requested::Refused(message)) => (Some(message), false),
             Err(e) => {
                 warn!("Requesting {}: {e:#}", self.media);
-                (UNREACHABLE.into(), false)
+                (Some(UNREACHABLE.into()), false)
             }
         }
     }
@@ -664,10 +655,11 @@ impl Card {
 }
 
 /// How a movie or season's status reads on the card
-const fn status(s: Status) -> &'static str {
+const fn status(s: Status, auto_approved: bool) -> &'static str {
     match s {
         Status::Missing => "Not requested",
         Status::Pending => "Requested, waiting for approval",
+        Status::Processing if auto_approved => "Automatically approved, not on Jellyfin yet",
         Status::Processing => "Approved, not on Jellyfin yet",
         Status::PartiallyAvailable => "Partly on Jellyfin",
         Status::Available => "On Jellyfin",
@@ -675,8 +667,9 @@ const fn status(s: Status) -> &'static str {
     }
 }
 
-/// One line per status, available first: "On Jellyfin: 1–3, 5"
-fn season_lines(seasons: &[(u32, Status)]) -> String {
+/// One line per status, available first: "On Jellyfin: 1–3, 5". Each season is its number,
+/// status, and whether it was approved automatically.
+fn season_lines(seasons: &[(u32, Status, bool)]) -> String {
     if seasons.is_empty() {
         return "None yet".into();
     }
@@ -689,13 +682,17 @@ fn season_lines(seasons: &[(u32, Status)]) -> String {
         Status::Blocklisted,
     ]
     .into_iter()
-    .filter_map(|s| {
+    .flat_map(|s| [(s, true), (s, false)])
+    .map(|(s, auto)| (status(s, auto), s, auto))
+    // Only approved seasons differ by `auto`, so the rest would show twice
+    .filter(|&(_, s, auto)| s == Status::Processing || !auto)
+    .filter_map(|(label, s, auto)| {
         let numbers: Vec<u32> = seasons
             .iter()
-            .filter(|&&(_, status)| status == s)
-            .map(|&(n, _)| n)
+            .filter(|&&(_, status, a)| status == s && (s != Status::Processing || a == auto))
+            .map(|&(n, ..)| n)
             .collect();
-        (!numbers.is_empty()).then(|| format!("{}: {}", status(s), ranges(&numbers)))
+        (!numbers.is_empty()).then(|| format!("{label}: {}", ranges(&numbers)))
     })
     .collect::<Vec<_>>()
     .join("\n")
@@ -748,14 +745,17 @@ mod tests {
     #[test]
     fn lines() {
         let seasons = [
-            (1, Status::Available),
-            (2, Status::Available),
-            (3, Status::Pending),
-            (4, Status::Missing),
+            (1, Status::Available, false),
+            (2, Status::Available, false),
+            (3, Status::Processing, true),
+            (4, Status::Processing, false),
+            (5, Status::Pending, false),
+            (6, Status::Missing, false),
         ];
         assert_eq!(
             season_lines(&seasons),
-            "On Jellyfin: 1\u{2013}2\nRequested, waiting for approval: 3\nNot requested: 4"
+            "On Jellyfin: 1\u{2013}2\nAutomatically approved, not on Jellyfin yet: 3\n\
+             Approved, not on Jellyfin yet: 4\nRequested, waiting for approval: 5\nNot requested: 6"
         );
     }
 

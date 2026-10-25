@@ -298,12 +298,15 @@ pub struct Request {
     pub is4k: bool,
     /// Who made it
     pub requested_by: Option<RequestedBy>,
+    /// Who last changed its status: the requester if it was approved automatically, else
+    /// whoever approved or declined it
+    pub modified_by: Option<RequestedBy>,
     /// Requested seasons, shows only. Their statuses here are request statuses.
     #[serde(default)]
     pub seasons: Vec<RequestSeason>,
 }
 
-/// The user who made a request
+/// A user a request refers to
 #[derive(Debug, Deserialize)]
 pub struct RequestedBy {
     /// Seerr's user id
@@ -415,6 +418,20 @@ impl Details {
             .collect()
     }
 
+    /// Whether the approved request covering season `n`, or the movie with `None`, was approved
+    /// automatically rather than by someone else. `false` if no approved request covers it.
+    pub fn auto_approved(&self, n: Option<u32>) -> bool {
+        self.media_info
+            .iter()
+            .flat_map(|m| &m.requests)
+            .filter(|r| !r.is4k && r.status == RequestStatus::Approved)
+            .find(|r| n.is_none_or(|n| r.seasons.iter().any(|s| s.season_number == n)))
+            .is_some_and(|r| {
+                let id = |by: &Option<RequestedBy>| by.as_ref().map(|by| by.id);
+                id(&r.modified_by).is_some() && id(&r.modified_by) == id(&r.requested_by)
+            })
+    }
+
     /// Where season `n` stands. Like Seerr, a season in an open (not declined or completed)
     /// request counts as requested even if its own status hasn't caught up.
     pub fn season_status(&self, n: u32) -> Status {
@@ -467,12 +484,6 @@ pub struct Options<'a> {
     pub ignore_quota: bool,
 }
 
-/// Response of a successful `POST /api/v1/request`
-#[derive(Debug, Deserialize)]
-struct Created {
-    status: RequestStatus,
-}
-
 /// Body of a Seerr error
 #[derive(Debug, Deserialize)]
 struct ErrorBody {
@@ -500,8 +511,7 @@ pub enum Cancelled {
 /// What came of a request
 #[derive(Debug)]
 pub enum Requested {
-    /// Made, and approved already if `approved`
-    Made { approved: bool },
+    Made,
     /// Seerr said no, e.g. over permissions, quota, or a duplicate. The message is Seerr's.
     Refused(String),
 }
@@ -686,12 +696,7 @@ impl Seerr {
 
         // Seerr answers 202 when every season was already requested, so only 201 means success
         match response.status() {
-            StatusCode::CREATED => {
-                let created: Created = response.json().await?;
-                Ok(Requested::Made {
-                    approved: created.status == RequestStatus::Approved,
-                })
-            }
+            StatusCode::CREATED => Ok(Requested::Made),
             StatusCode::ACCEPTED | StatusCode::FORBIDDEN | StatusCode::CONFLICT => {
                 let body: ErrorBody = response.json().await?;
                 Ok(Requested::Refused(
@@ -849,6 +854,30 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn auto_approved() {
+        let show: Details = serde_json::from_str(
+            r#"{
+                "name": "Show",
+                "mediaInfo": {
+                    "status": 3,
+                    "requests": [
+                        {"id": 1, "status": 2, "is4k": false, "requestedBy": {"id": 5},
+                         "modifiedBy": {"id": 5}, "seasons": [{"seasonNumber": 1}]},
+                        {"id": 2, "status": 2, "is4k": false, "requestedBy": {"id": 8},
+                         "modifiedBy": {"id": 1}, "seasons": [{"seasonNumber": 2}]},
+                        {"id": 3, "status": 1, "is4k": false, "requestedBy": {"id": 8},
+                         "seasons": [{"seasonNumber": 3}]}
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(show.auto_approved(Some(1)));
+        assert!(!show.auto_approved(Some(2)));
+        assert!(!show.auto_approved(Some(3)));
     }
 
     #[test]
