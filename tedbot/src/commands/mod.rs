@@ -27,7 +27,7 @@ async fn is_admin(ctx: Context<'_>) -> bool {
 }
 
 /// Backslash-escapes Discord markdown characters so titles show literally
-fn escape(s: &str) -> String {
+pub fn escape(s: &str) -> String {
     s.chars()
         .fold(String::with_capacity(s.len()), |mut out, c| {
             if matches!(c, '\\' | '*' | '_' | '~' | '`' | '|') {

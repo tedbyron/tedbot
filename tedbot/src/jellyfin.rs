@@ -55,7 +55,7 @@ pub struct Session {
     pub client: Option<String>,
     /// Device name, e.g. "Firefox"
     pub device_name: Option<String>,
-    /// Client IP. Caddy is a known proxy, so this is the real client, not 127.0.0.1.
+    /// Client IP. Caddy is a known proxy, so this is the real client, not localhost.
     pub remote_end_point: Option<String>,
     /// What's playing, if anything
     pub now_playing_item: Option<NowPlaying>,

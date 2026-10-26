@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Where to reach Seerr and how to authenticate. The HTTP client is passed in per call so the bot
 /// shares one connection pool.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Seerr {
     pub url: String,
     pub api_key: String,

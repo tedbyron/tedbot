@@ -2,8 +2,8 @@
 
 #![allow(clippy::module_name_repetitions)]
 
-use poise::serenity_prelude::{RoleId, UserId};
-use serde::Deserialize;
+use poise::serenity_prelude::{ChannelId, RoleId, UserId};
+use serde::{Deserialize, Deserializer};
 
 /// Bot config
 #[derive(Debug, Deserialize)]
@@ -35,6 +35,9 @@ pub struct DiscordConfig {
     /// Users who count as admins anywhere, including DMs
     #[serde(default)]
     pub admin_users: Vec<UserId>,
+    /// Channels to post in when a request is available in Jellyfin. Needs `seerr.webhook`.
+    #[serde(default)]
+    pub available_channels: Vec<ChannelId>,
     /// Optional Discord activity
     pub activity: Option<DiscordActivityConfig>,
 }
@@ -56,14 +59,14 @@ pub struct DiscordActivityConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct ErsatzTvConfig {
-    /// Base URL, without the `/iptv/...` path. Defaults to `http://127.0.0.1:8409`.
+    /// Base URL, without the `/iptv/...` path. Defaults to `http://localhost:8409`.
     pub url: String,
 }
 
 impl Default for ErsatzTvConfig {
     fn default() -> Self {
         Self {
-            url: "http://127.0.0.1:8409".into(),
+            url: "http://localhost:8409".into(),
         }
     }
 }
@@ -71,7 +74,7 @@ impl Default for ErsatzTvConfig {
 /// Jellyfin connection info
 #[derive(Debug, Deserialize)]
 pub struct JellyfinConfig {
-    /// Base URL. Defaults to `http://127.0.0.1:8096`.
+    /// Base URL. Defaults to `http://localhost:8096`.
     #[serde(default = "default_jellyfin_url")]
     pub url: String,
     /// API key made for the bot under Dashboard → API Keys
@@ -79,29 +82,31 @@ pub struct JellyfinConfig {
 }
 
 fn default_jellyfin_url() -> String {
-    "http://127.0.0.1:8096".into()
+    "http://localhost:8096".into()
 }
 
 /// Seerr connection info
 #[derive(Debug, Deserialize)]
 pub struct SeerrConfig {
-    /// Base URL, without `/api/v1`. Defaults to `http://127.0.0.1:5055`.
+    /// Base URL, without `/api/v1`. Defaults to `http://localhost:5055`.
     #[serde(default = "default_seerr_url")]
     pub url: String,
     /// API key from Settings → General
     pub api_key: String,
     /// Optional address people open in a browser, for links to Seerr pages
     pub public_url: Option<String>,
+    /// Optional listener for Seerr's webhook
+    pub webhook: Option<WebhookConfig>,
 }
 
 fn default_seerr_url() -> String {
-    "http://127.0.0.1:5055".into()
+    "http://localhost:5055".into()
 }
 
 /// Radarr connection info
 #[derive(Debug, Deserialize)]
 pub struct RadarrConfig {
-    /// Base URL, without `/api/v3`. Defaults to `http://127.0.0.1:7878`.
+    /// Base URL, without `/api/v3`. Defaults to `http://localhost:7878`.
     #[serde(default = "default_radarr_url")]
     pub url: String,
     /// API key from Settings → General
@@ -109,13 +114,13 @@ pub struct RadarrConfig {
 }
 
 fn default_radarr_url() -> String {
-    "http://127.0.0.1:7878".into()
+    "http://localhost:7878".into()
 }
 
 /// Sonarr connection info
 #[derive(Debug, Deserialize)]
 pub struct SonarrConfig {
-    /// Base URL, without `/api/v3`. Defaults to `http://127.0.0.1:8989`.
+    /// Base URL, without `/api/v3`. Defaults to `http://localhost:8989`.
     #[serde(default = "default_sonarr_url")]
     pub url: String,
     /// API key from Settings → General
@@ -123,5 +128,41 @@ pub struct SonarrConfig {
 }
 
 fn default_sonarr_url() -> String {
-    "http://127.0.0.1:8989".into()
+    "http://localhost:8989".into()
+}
+
+/// Listener for Seerr's webhook, on localhost
+#[derive(Debug, Deserialize)]
+pub struct WebhookConfig {
+    pub port: u16,
+    /// URLs to pass every notification on to, since Seerr only has one webhook. One URL or a list.
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub forward: Vec<String>,
+}
+
+/// A string or a list of them
+fn one_or_many<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(s) => vec![s],
+        OneOrMany::Many(v) => v,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forward_one_or_many() {
+        let forward = |toml: &str| toml::from_str::<WebhookConfig>(toml).unwrap().forward;
+        assert!(forward("port = 1").is_empty());
+        assert_eq!(forward("port = 1\nforward = 'a'"), ["a"]);
+        assert_eq!(forward("port = 1\nforward = ['a', 'b']"), ["a", "b"]);
+    }
 }

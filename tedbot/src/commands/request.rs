@@ -732,7 +732,7 @@ fn season_lines(seasons: &[(u32, Status, bool)]) -> String {
 }
 
 /// Ascending numbers with runs collapsed: `[1, 2, 3, 5]` -> "1–3, 5"
-pub(super) fn ranges(numbers: &[u32]) -> String {
+pub fn ranges(numbers: &[u32]) -> String {
     let mut runs: Vec<(u32, u32)> = Vec::new();
     for &n in numbers {
         match runs.last_mut() {
@@ -753,7 +753,7 @@ pub(super) fn ranges(numbers: &[u32]) -> String {
 }
 
 /// `s` cut at a word to at most `max` characters, with "…" if anything was cut
-pub(super) fn truncate(s: &str, max: usize) -> String {
+pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();
     }

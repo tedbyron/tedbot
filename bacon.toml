@@ -1,4 +1,5 @@
 default_job = "run-long"
+watch = ["config.toml"]
 
 [jobs.run-long]
 command = ["cargo", "run"]

@@ -16,11 +16,13 @@ use poise::{
 use tracing::{Level, error, info, warn};
 
 mod arr;
+mod available;
 mod commands;
 mod config;
 mod ersatztv;
 mod jellyfin;
 mod seerr;
+mod webhook;
 
 /// State shared by every command invocation
 #[derive(Debug)]
@@ -102,6 +104,17 @@ async fn run() -> Result<()> {
     let activity = cfg.discord.activity;
     let admin_role = cfg.discord.admin_role;
     let admin_users = cfg.discord.admin_users;
+    let webhook = match cfg.seerr.webhook {
+        Some(c) => {
+            Some(webhook::Listener::bind(c.port, c.forward, cfg.discord.available_channels).await?)
+        }
+        None => {
+            if !cfg.discord.available_channels.is_empty() {
+                warn!("discord.available_channels needs [seerr.webhook]");
+            }
+            None
+        }
+    };
     let http = reqwest::Client::new();
     let data = Data {
         guide: ersatztv::GuideCache::new(http.clone(), cfg.ersatztv.url, Duration::from_secs(60)),
@@ -127,7 +140,9 @@ async fn run() -> Result<()> {
         admin_users,
     };
     let framework = Framework::builder()
-        .setup(move |ctx, ready, framework| Box::pin(setup(ctx, ready, framework, activity, data)))
+        .setup(move |ctx, ready, framework| {
+            Box::pin(setup(ctx, ready, framework, activity, webhook, data))
+        })
         .options(options)
         .build();
 
@@ -167,14 +182,15 @@ async fn command_check(ctx: Context<'_>) -> Result<bool> {
     Ok(!ctx.author().bot)
 }
 
-/// Runs once the gateway is ready: registers commands, logs the invite link, and sets the
-/// activity. Returns the shared [`Data`] for poise to hand to commands.
+/// Runs once the gateway is ready: registers commands, logs the invite link, sets the activity,
+/// and starts serving the webhook. Returns the shared [`Data`] for poise to hand to commands.
 #[tracing::instrument(skip_all)]
 async fn setup(
     ctx: &serenity::Context,
     ready: &serenity::Ready,
     framework: &Framework,
     cfg: Option<config::DiscordActivityConfig>,
+    webhook: Option<webhook::Listener>,
     data: Data,
 ) -> Result<Data> {
     register_globally(ctx, &framework.options().commands).await?;
@@ -189,6 +205,9 @@ async fn setup(
 
     if let Some(cfg) = &cfg {
         activity(ctx, cfg);
+    }
+    if let Some(webhook) = webhook {
+        webhook.spawn(ctx.http.clone(), data.http.clone(), data.seerr.clone());
     }
 
     Ok(data)
@@ -221,6 +240,7 @@ async fn clear_guild_commands(ctx: &serenity::Context, ready: &serenity::Ready) 
 /// OAuth link that adds the bot to a server with the permissions its commands need
 fn invite_url(ready: &serenity::Ready) -> String {
     let permissions = Permissions::ADD_REACTIONS
+        | Permissions::EMBED_LINKS
         | Permissions::READ_MESSAGE_HISTORY
         | Permissions::SEND_MESSAGES
         | Permissions::VIEW_CHANNEL;

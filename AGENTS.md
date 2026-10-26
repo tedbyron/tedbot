@@ -6,7 +6,10 @@ home media server.
 ## Current state of the code
 
 - Workspace with one crate, `tedbot/`. Commands live in `tedbot/src/commands/`
-  and are registered in `main.rs` (`FrameworkOptions.commands`).
+  and are registered in `main.rs` (`FrameworkOptions.commands`). Upstream API
+  clients are one module each (`seerr.rs`, `jellyfin.rs`, `arr.rs`,
+  `ersatztv.rs`). `webhook.rs` listens for Seerr's webhook, started in `setup`
+  once the gateway is ready, and hands available requests to `available.rs`.
 - Config is read from `$TEDBOT_CONFIG`, falling back to `config.toml` in the
   working directory (gitignored; see `config.example.toml`). Secrets go there,
   never in the repo.
@@ -24,19 +27,19 @@ is declared in the dotfiles repo at
 `/Users/ted/git/dotfiles/hosts/teds-mac-mini/modules/`, one nix module per
 service. Read those for the source of truth; the table below is a summary.
 
-All services bind to 127.0.0.1 only. The bot runs on the same machine.
+All services bind to localhost only. The bot runs on the same machine.
 
 | Service     | Local URL             | Notes                                                                  |
 | ----------- | --------------------- | ---------------------------------------------------------------------- |
-| Jellyfin    | http://127.0.0.1:8096 | Public at https://stream.ted.ooo via Caddy                             |
-| Seerr       | http://127.0.0.1:5055 | Requests; public at https://request.ted.ooo                            |
-| Sonarr      | http://127.0.0.1:8989 | TV                                                                     |
-| Radarr      | http://127.0.0.1:7878 | Movies                                                                 |
-| Prowlarr    | http://127.0.0.1:9696 | Indexers                                                               |
-| qBittorrent | http://127.0.0.1:8080 | Web API; bound to a Mullvad WireGuard tunnel only                      |
-| Prometheus  | http://127.0.0.1:9090 | node-exporter, jellyfin, jelly-metrics, macos-process-exporter targets |
-| Grafana     | http://127.0.0.1:3000 | Prometheus datasource uid `prometheus`; not public                     |
-| ErsatzTV    | http://127.0.0.1:8409 | Live TV channels; XMLTV guide at `/iptv/xmltv.xml`                     |
+| Jellyfin    | http://localhost:8096 | Public at https://stream.ted.ooo via Caddy                             |
+| Seerr       | http://localhost:5055 | Requests; public at https://request.ted.ooo                            |
+| Sonarr      | http://localhost:8989 | TV                                                                     |
+| Radarr      | http://localhost:7878 | Movies                                                                 |
+| Prowlarr    | http://localhost:9696 | Indexers                                                               |
+| qBittorrent | http://localhost:8080 | Web API; bound to a Mullvad WireGuard tunnel only                      |
+| Prometheus  | http://localhost:9090 | node-exporter, jellyfin, jelly-metrics, macos-process-exporter targets |
+| Grafana     | http://localhost:3000 | Prometheus datasource uid `prometheus`; not public                     |
+| ErsatzTV    | http://localhost:8409 | Live TV channels; XMLTV guide at `/iptv/xmltv.xml`                     |
 
 Where credentials live (read at runtime, never commit or copy into the nix
 store):
@@ -54,10 +57,25 @@ store):
 - **Requests channel**: Seerr requests posted to one channel, with approve and
   decline buttons visible only to an admin role. Seerr's built-in Discord
   webhook can post requests but can't act on them, so only the bot can do this.
-- **Available channel**: "download complete / available in Jellyfin" posts in
-  one channel, pinging the requester if they're linked to the bot. Map Seerr
-  users to Discord via the `discordIds` in each Seerr user's notification
-  settings instead of a separate link table.
+  `MEDIA_PENDING` already reaches the bot's webhook.
+- **Available channel** (done): "now available" posts in each of
+  `discord.available_channels` when Seerr's webhook sends `MEDIA_AVAILABLE`:
+  poster, title, overview, seasons and requester, with Jellyfin and Seerr link
+  buttons. The requester shows as a mention (no ping: it's in an embed and
+  allowed mentions are empty) when their `discordIds` account is in that
+  channel's server, else by Seerr name. Only posted if the request's movie or
+  seasons are available, and once per request per run. Needs Embed Links in the
+  channel.
+- **Webhook** (`webhook.rs`, `[seerr.webhook]` config): listens on localhost
+  (`Ipv4Addr::LOCALHOST`) at `/seerr`. Seerr has only one webhook and Moonfin (a
+  Jellyfin plugin, at `/Moonfin/Seerr/Webhook` on Jellyfin) used it, so the bot
+  forwards every notification to each of `seerr.webhook.forward` (one URL or a
+  list) at once with its Content-Type and Authorization, and answers Seerr with
+  the first failed response, else the first one. Logs leave out the query, which
+  may hold a secret. Payloads are whatever Seerr's template makes (Moonfin's);
+  the bot only reads `notification_type` and `request.request_id`, both in
+  Seerr's default and Moonfin's. Seerr's webhook URL is set in dotfiles'
+  `seerr.nix`.
 - **`/request <title>`** (done): search Seerr, one ephemeral card per result
   with poster, year, overview and status, ◀ ▶ through results, and a Request
   button. Shows get a season dropdown (no pick means all open seasons; Discord
@@ -118,10 +136,8 @@ store):
   as ephemeral follow-ups. Replies are ephemeral; ephemeral messages can only be
   edited with an interaction token, which expires after 15 minutes, so buttons
   time out after 14 and are removed with the newest token.
-- **`/upcoming`**: new episodes this week for requested shows, from Sonarr's
-  calendar. Could also ping the requester on air day.
 - **Bot metrics**: expose a Prometheus `/metrics` endpoint from the bot (bound
-  to 127.0.0.1, port set in config) with things like commands run per command,
+  to localhost, port set in config) with things like commands run per command,
   command errors, latency, gateway status/heartbeat latency, and upstream
   request failures per service. In dotfiles, add a scrape job in
   `prometheus.nix` next to the existing ones and a Grafana dashboard for it
@@ -130,8 +146,9 @@ store):
 - Maybe later: admin alerts (tunnel down, disk space, target down, stuck
   downloads), "report a problem" button creating a Seerr issue.
 
-Seerr and Jellyfin (Webhook plugin) can push events by HTTP POST. If the bot
-listens for webhooks, bind that listener to 127.0.0.1.
+Seerr and Jellyfin (Webhook plugin) can push events by HTTP POST. Seerr's
+already comes to the bot (`webhook.rs`); new Seerr events go there. Any other
+listener binds to localhost too.
 
 Anything that controls qBittorrent, approves requests, or deletes media must be
 restricted to admins: `discord.admin_users` or members with `discord.admin_role`
