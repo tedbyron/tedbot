@@ -558,7 +558,7 @@ impl Card {
             );
         }
         if let Some(url) = &self.watch {
-            buttons.push(CreateButton::new_link(url).label("Watch"));
+            buttons.push(CreateButton::new_link(url).label("Jellyfin"));
         }
         // Discord allows at most 5 buttons per row
         rows.extend(

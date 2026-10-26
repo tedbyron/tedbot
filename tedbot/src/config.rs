@@ -2,7 +2,7 @@
 
 #![allow(clippy::module_name_repetitions)]
 
-use poise::serenity_prelude::{ChannelId, RoleId, UserId};
+use poise::serenity_prelude::{ChannelId, RoleId};
 use serde::{Deserialize, Deserializer};
 
 /// Bot config
@@ -30,14 +30,9 @@ pub struct Config {
 pub struct DiscordConfig {
     /// Bot token from the Discord developer portal
     pub token: String,
-    /// Optional role whose members count as admins
+    /// Optional role whose members count as admins, pinged for requests waiting for approval.
+    /// Without it nobody is an admin.
     pub admin_role: Option<RoleId>,
-    /// Users who count as admins anywhere, including DMs
-    #[serde(default)]
-    pub admin_users: Vec<UserId>,
-    /// Channels to post in when a request is available in Jellyfin. Needs `seerr.webhook`.
-    #[serde(default)]
-    pub available_channels: Vec<ChannelId>,
     /// Optional Discord activity
     pub activity: Option<DiscordActivityConfig>,
 }
@@ -138,6 +133,12 @@ pub struct WebhookConfig {
     /// URLs to pass every notification on to, since Seerr only has one webhook. One URL or a list.
     #[serde(default, deserialize_with = "one_or_many")]
     pub forward: Vec<String>,
+    /// Channels to post in when a request is made
+    #[serde(default)]
+    pub requests_channels: Vec<ChannelId>,
+    /// Channels to post in when a request is available in Jellyfin
+    #[serde(default)]
+    pub available_channels: Vec<ChannelId>,
 }
 
 /// A string or a list of them

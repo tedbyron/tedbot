@@ -2,10 +2,13 @@
 //! each of `seerr.webhook.forward`, answering Seerr with the first failed response, else the
 //! first one.
 //!
+//! New and available requests are posted in Discord ([`announce`]), and request posts are kept
+//! up to date as Seerr says their requests change.
+//!
 //! Listens on localhost only. Point Seerr's webhook URL at `http://localhost:<port>/seerr`.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     net::Ipv4Addr,
     sync::{Arc, Mutex},
 };
@@ -20,32 +23,36 @@ use axum::{
     routing::post,
 };
 use futures::future::join_all;
-use poise::serenity_prelude::{ChannelId, Http};
+use poise::serenity_prelude::{ChannelId, Http, MessageId};
 use serde::Deserialize;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
-use crate::{available, seerr::Seerr};
+use crate::{
+    Data,
+    announce::{self, Event, Targets},
+    commands::requests::refresh_post,
+};
 
 /// The bound listener, waiting for the Discord connection before serving
 #[derive(Debug)]
 pub struct Listener {
     listener: TcpListener,
     forward: Vec<String>,
-    channels: Vec<ChannelId>,
+    targets: Targets,
 }
 
 /// What a notification handler needs
 struct Hook {
     discord: Arc<Http>,
-    http: reqwest::Client,
-    seerr: Seerr,
+    data: Arc<Data>,
     /// Where to pass notifications on to
     forward: Vec<String>,
-    /// Where to post available requests
-    channels: Vec<ChannelId>,
-    /// Requests posted as available, since Seerr can say so more than once
-    posted: Mutex<HashSet<u32>>,
+    targets: Targets,
+    /// Requests posted, since Seerr can say the same thing more than once
+    posted: Mutex<HashSet<(Event, u32)>>,
+    /// Each request's posts in the requests channels, this run
+    posts: Mutex<HashMap<u32, Vec<(ChannelId, MessageId)>>>,
 }
 
 /// The parts of a notification the bot reads. Seerr's default payload and Moonfin's both have
@@ -66,26 +73,26 @@ struct NotificationRequest {
 
 impl Listener {
     /// Binds localhost:`port`, so a port in use fails at startup
-    pub async fn bind(port: u16, forward: Vec<String>, channels: Vec<ChannelId>) -> Result<Self> {
+    pub async fn bind(port: u16, forward: Vec<String>, targets: Targets) -> Result<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
             .await
             .with_context(|| format!("binding localhost:{port} for the webhook"))?;
         Ok(Self {
             listener,
             forward,
-            channels,
+            targets,
         })
     }
 
     /// Serves in the background for as long as the bot runs
-    pub fn spawn(self, discord: Arc<Http>, http: reqwest::Client, seerr: Seerr) {
+    pub fn spawn(self, discord: Arc<Http>, data: Arc<Data>) {
         let hook = Arc::new(Hook {
             discord,
-            http,
-            seerr,
+            data,
             forward: self.forward,
-            channels: self.channels,
+            targets: self.targets,
             posted: Mutex::default(),
+            posts: Mutex::default(),
         });
         let app = Router::new().route("/seerr", post(notify)).with_state(hook);
         if let Ok(addr) = self.listener.local_addr() {
@@ -105,10 +112,10 @@ async fn notify(State(hook): State<Arc<Hook>>, headers: HeaderMap, body: Bytes) 
         Ok(Notification {
             notification_type,
             request: Some(request),
-        }) if notification_type == "MEDIA_AVAILABLE" => match request.request_id.parse() {
+        }) => match request.request_id.parse() {
             Ok(id) => {
                 let hook = hook.clone();
-                tokio::spawn(async move { hook.available(id).await });
+                tokio::spawn(async move { hook.handle(&notification_type, id).await });
             }
             Err(_) => warn!("Seerr webhook has request id {:?}", request.request_id),
         },
@@ -119,31 +126,58 @@ async fn notify(State(hook): State<Arc<Hook>>, headers: HeaderMap, body: Bytes) 
 }
 
 impl Hook {
-    /// Posts request `id` as available, if it hasn't been already
-    async fn available(&self, id: u32) {
-        if self.channels.is_empty() || !self.posted.lock().unwrap().insert(id) {
+    /// Acts on a notification of type `kind` about request `id`
+    async fn handle(&self, kind: &str, id: u32) {
+        match kind {
+            "MEDIA_PENDING" | "MEDIA_AUTO_APPROVED" => self.announce(Event::Requested, id).await,
+            "MEDIA_AVAILABLE" => {
+                tokio::join!(self.announce(Event::Available, id), self.refresh(id));
+            }
+            "MEDIA_APPROVED" | "MEDIA_DECLINED" | "MEDIA_FAILED" => self.refresh(id).await,
+            _ => {}
+        }
+    }
+
+    /// Rebuilds request `id`'s posts in the requests channels
+    async fn refresh(&self, id: u32) {
+        let posts = self.posts.lock().unwrap().get(&id).cloned();
+        for (channel, message) in posts.into_iter().flatten() {
+            if let Err(e) = refresh_post(&self.data, &self.discord, channel, message, id).await {
+                warn!("Refreshing request {id}'s post in channel {channel}: {e:#}");
+            }
+        }
+    }
+
+    /// Posts `event` for request `id`, if it hasn't been already
+    async fn announce(&self, event: Event, id: u32) {
+        let key = (event, id);
+        if self.targets.channels(event).is_empty() || !self.posted.lock().unwrap().insert(key) {
             return;
         }
-        let request = match self.seerr.request_by_id(&self.http, id).await {
-            Ok(Some(request)) if !request.is4k => request,
+        let request = match self.data.seerr.request_by_id(&self.data.http, id).await {
+            // Only the default server's availability is checked
+            Ok(Some(request)) if !(request.is4k && event == Event::Available) => request,
             Ok(_) => return,
             Err(e) => {
                 warn!("Fetching request {id}: {e:#}");
-                self.posted.lock().unwrap().remove(&id);
+                self.posted.lock().unwrap().remove(&key);
                 return;
             }
         };
-        if let Err(e) = available::post(
-            &self.discord,
-            &self.http,
-            &self.seerr,
-            &self.channels,
-            &request,
-        )
-        .await
-        {
-            warn!("Posting request {id} as available: {e:#}");
-            self.posted.lock().unwrap().remove(&id);
+        match announce::post(&self.discord, &self.data, &self.targets, event, &request).await {
+            Ok(posts) if event == Event::Requested => {
+                self.posts
+                    .lock()
+                    .unwrap()
+                    .entry(id)
+                    .or_default()
+                    .extend(posts);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!("Posting request {id} ({event:?}): {e:#}");
+                self.posted.lock().unwrap().remove(&key);
+            }
         }
     }
 
@@ -171,7 +205,7 @@ impl Hook {
     async fn forward_to(&self, url: &str, headers: &HeaderMap, body: Bytes) -> Response {
         // The query may hold a secret
         let shown = url.split_once('?').map_or(url, |(path, _)| path);
-        let mut request = self.http.post(url).body(body);
+        let mut request = self.data.http.post(url).body(body);
         for name in [header::CONTENT_TYPE, header::AUTHORIZATION] {
             if let Some(value) = headers.get(&name) {
                 request = request.header(name, value);
@@ -208,7 +242,10 @@ impl Hook {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+    use crate::{ersatztv::GuideCache, jellyfin::Jellyfin, seerr::Seerr};
 
     /// The Authorization header and body the upstream got
     type Seen = Arc<Mutex<Option<(String, Bytes)>>>;
@@ -259,17 +296,30 @@ mod tests {
                 format!("http://{upstream_addr}/ok"),
                 format!("http://{upstream_addr}/hook"),
             ],
-            Vec::new(),
+            Targets::default(),
         )
         .await
         .unwrap();
         let addr = listener.listener.local_addr().unwrap();
-        let seerr = Seerr {
-            url: "http://localhost:1".into(),
-            api_key: String::new(),
-            public_url: None,
+        let http = reqwest::Client::new();
+        let unused = || "http://localhost:1".to_owned();
+        let data = Data {
+            guide: GuideCache::new(http.clone(), unused(), Duration::ZERO),
+            http,
+            jellyfin: Jellyfin {
+                url: unused(),
+                api_key: String::new(),
+            },
+            seerr: Seerr {
+                url: unused(),
+                api_key: String::new(),
+                public_url: None,
+            },
+            radarr: None,
+            sonarr: None,
+            admin_role: None,
         };
-        listener.spawn(Arc::new(Http::new("")), reqwest::Client::new(), seerr);
+        listener.spawn(Arc::new(Http::new("")), Arc::new(data));
 
         let body = r#"{"notification_type": "MEDIA_PENDING", "request": {"request_id": "1"}}"#;
         let response = reqwest::Client::new()

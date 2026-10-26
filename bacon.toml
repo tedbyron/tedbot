@@ -1,4 +1,6 @@
 default_job = "run-long"
+# config.toml is gitignored, which bacon would otherwise skip
+apply_gitignore = false
 watch = ["config.toml"]
 
 [jobs.run-long]

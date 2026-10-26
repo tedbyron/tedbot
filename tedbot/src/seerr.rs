@@ -308,7 +308,7 @@ pub struct SeasonInfo {
 }
 
 /// A request for a movie or some seasons of a show
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
     pub id: u32,
@@ -337,7 +337,7 @@ pub struct Request {
 }
 
 /// The movie or show a request is for
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestMedia {
     /// TMDB id
@@ -371,7 +371,7 @@ impl Request {
 }
 
 /// A user a request refers to
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestedBy {
     /// Seerr's user id
@@ -403,7 +403,7 @@ pub struct RequestPage {
 }
 
 /// One season of a show request
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestSeason {
     pub season_number: u32,

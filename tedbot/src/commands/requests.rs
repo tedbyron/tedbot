@@ -5,6 +5,9 @@
 //! nothing's downloaded. Admins also get Approve and Decline on pending requests, and can change
 //! their quality and seasons before approving. Buttons work until [`NAV_TIMEOUT`] passes with no
 //! press, then they're removed.
+//!
+//! New requests are also posted in `seerr.webhook.requests_channels` as the same card, made for
+//! admins ([`post_card`]). Those buttons work for as long as the post is there ([`post_press`]).
 
 use std::{
     collections::HashMap,
@@ -18,16 +21,18 @@ use futures::future::join_all;
 use poise::{
     ChoiceParameter, CreateReply, command,
     serenity_prelude::{
-        Builder as _, ButtonStyle, ComponentInteractionCollector, ComponentInteractionDataKind,
-        CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
-        CreateInteractionResponseFollowup, CreateSelectMenu, CreateSelectMenuKind,
-        CreateSelectMenuOption, EditInteractionResponse, GuildId, Http, Mentionable as _, UserId,
+        self as serenity, Builder as _, ButtonStyle, Channel, ChannelId, ComponentInteraction,
+        ComponentInteractionCollector, ComponentInteractionDataKind, CreateActionRow, CreateButton,
+        CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
+        CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateSelectMenu,
+        CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse, EditMessage, Embed,
+        GuildId, Http, Mentionable as _, MessageId, UserId,
     },
 };
 use tracing::warn;
 
 use super::{
-    escape, is_admin,
+    escape, has_admin_role, is_admin,
     request::{can_unsend, cancel, ranges, status, truncate},
 };
 use crate::{
@@ -56,6 +61,8 @@ const BATCH_MAX: usize = 100;
 const BATCH_SHOWN: usize = 25;
 /// Reply when Seerr can't be reached
 const UNREACHABLE: &str = "Couldn't reach Seerr, try again in a bit \u{1fae4}";
+/// Start of custom ids on request posts, followed by the request id: `request-post:12-approve`
+const POST: &str = "request-post:";
 
 /// Which requests to list
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ChoiceParameter)]
@@ -321,20 +328,11 @@ struct Viewer {
 impl Viewer {
     /// Fetches the quality profiles for admins. Without them, there's no quality menu.
     async fn load(ctx: Context<'_>, user: Option<Requester>, admin: bool, filter: Filter) -> Self {
-        let data = ctx.data();
-        let profiles = |media| async move {
-            if !admin {
-                return None;
-            }
-            data.seerr
-                .profiles(&data.http, media)
-                .await
-                .inspect_err(|e| warn!("Fetching quality profiles: {e:#}"))
-                .ok()
-                .flatten()
+        let (movie_profiles, tv_profiles) = if admin {
+            profiles(ctx.data()).await
+        } else {
+            (None, None)
         };
-        let (movie_profiles, tv_profiles) =
-            tokio::join!(profiles(Media::Movie(0)), profiles(Media::Tv(0)));
         Self {
             user,
             admin,
@@ -343,6 +341,21 @@ impl Viewer {
             tv_profiles,
             guild: ctx.guild_id(),
             discord: ctx.serenity_context().http.clone(),
+            members: Mutex::default(),
+        }
+    }
+
+    /// An admin's view, for request posts in `guild`'s channels, which only admins can act on
+    async fn post(data: &Data, discord: Arc<Http>, guild: Option<GuildId>) -> Self {
+        let (movie_profiles, tv_profiles) = profiles(data).await;
+        Self {
+            user: None,
+            admin: true,
+            filter: Filter::All,
+            movie_profiles,
+            tv_profiles,
+            guild,
+            discord,
             members: Mutex::default(),
         }
     }
@@ -443,8 +456,7 @@ impl Screen {
                     return Self::card(
                         data,
                         viewer,
-                        index.min(total.max(1) - 1),
-                        total,
+                        Some((index.min(total.max(1) - 1), total)),
                         request,
                         id,
                     )
@@ -467,7 +479,9 @@ impl Screen {
                     .await?;
                 let total = page.total as usize;
                 match page.requests.into_iter().next() {
-                    Some(request) => Self::card(data, viewer, index, total, request, id).await,
+                    Some(request) => {
+                        Self::card(data, viewer, Some((index, total)), request, id).await
+                    }
                     None if total > 0 => {
                         let last = View::Card {
                             index: total - 1,
@@ -479,7 +493,7 @@ impl Screen {
                 }
             }
             View::Batch { index, id: request } => {
-                if let Some(screen) = Self::batch(data, viewer, index, request, id).await? {
+                if let Some(screen) = Self::batch(data, viewer, Some(index), request, id).await? {
                     return Ok(screen);
                 }
                 let card = View::Card {
@@ -621,15 +635,16 @@ impl Screen {
         })
     }
 
-    /// Request `index` of `total` as a card
+    /// A request as a card. `position` is its index in the list and the number listed; without
+    /// one it's a post, with no list to go back to but a refresh button and a link to Seerr.
     async fn card(
         data: &Data,
         viewer: &Viewer,
-        index: usize,
-        total: usize,
+        position: Option<(usize, usize)>,
         request: Request,
         id: &str,
     ) -> Result<Self> {
+        let (index, total) = position.unwrap_or((0, 1));
         let media = request
             .media()
             .context("request isn't for a movie or show")?;
@@ -637,7 +652,8 @@ impl Screen {
         let title = seerr::with_year(&details.title, details.release_date.as_deref());
 
         let mut embed = CreateEmbed::new().title(&title);
-        if let Some(url) = data.seerr.page(media) {
+        // Posts link to Seerr with a button instead
+        if let (Some(_), Some(url)) = (position, data.seerr.page(media)) {
             embed = embed.url(url);
         }
         if let Some(path) = &details.poster_path {
@@ -760,11 +776,13 @@ impl Screen {
                     .style(ButtonStyle::Secondary),
             );
         }
-        buttons.push(
-            button("back")
-                .label("All requests")
-                .style(ButtonStyle::Secondary),
-        );
+        if position.is_some() {
+            buttons.push(
+                button("back")
+                    .label("All requests")
+                    .style(ButtonStyle::Secondary),
+            );
+        }
         if reviewable {
             buttons.push(
                 button("approve")
@@ -797,12 +815,22 @@ impl Screen {
                     .style(ButtonStyle::Secondary),
             );
         }
+        if position.is_none() {
+            buttons.push(
+                button("refresh")
+                    .emoji('\u{1f504}')
+                    .style(ButtonStyle::Secondary),
+            );
+        }
         if let Some(url) = details
             .media_info
             .as_ref()
             .and_then(|m| m.media_url.as_ref())
         {
-            buttons.push(CreateButton::new_link(url).label("Watch"));
+            buttons.push(CreateButton::new_link(url).label("Jellyfin"));
+        }
+        if let (None, Some(url)) = (position, data.seerr.page(media)) {
+            buttons.push(CreateButton::new_link(url).label("Seerr"));
         }
         // Discord allows at most 5 buttons per row
         components.extend(
@@ -831,13 +859,14 @@ impl Screen {
         })
     }
 
-    /// Asks to confirm approving request `request`'s batch, listing what's in it. `None` if
-    /// there's no batch to approve: the viewer isn't an admin, or the request is gone, no longer
-    /// pending, or on its own.
+    /// Asks to confirm approving request `request`'s batch, listing what's in it. `index` is the
+    /// card's, to go back to; without one there's no Back button. `None` if there's no batch to
+    /// approve: the viewer isn't an admin, or the request is gone, no longer pending, or on its
+    /// own.
     async fn batch(
         data: &Data,
         viewer: &Viewer,
-        index: usize,
+        index: Option<usize>,
         request: u32,
         id: &str,
     ) -> Result<Option<Self>> {
@@ -898,26 +927,46 @@ impl Screen {
             .description(lines.join("\n"));
 
         let button = |suffix: &str| CreateButton::new(format!("{id}-{suffix}"));
-        let components = vec![CreateActionRow::Buttons(vec![
-            button("batch-back")
-                .label("Back")
-                .style(ButtonStyle::Secondary),
+        let mut buttons = Vec::new();
+        if index.is_some() {
+            buttons.push(
+                button("batch-back")
+                    .label("Back")
+                    .style(ButtonStyle::Secondary),
+            );
+        }
+        buttons.push(
             button("approve-all")
                 .label(format!("Approve all {n}"))
                 .style(ButtonStyle::Success),
-        ])];
+        );
+        let components = vec![CreateActionRow::Buttons(buttons)];
 
         Ok(Some(Self {
             embed,
             components,
             view: View::Batch {
-                index,
+                index: index.unwrap_or(0),
                 id: request.id,
             },
             total: 0,
             card: None,
             batch: batch.iter().map(|r| r.id).zip(titles).collect(),
         }))
+    }
+}
+
+impl Screen {
+    /// A post whose request is no longer in Seerr, from the card it had, without buttons
+    fn gone(embeds: &[Embed]) -> Self {
+        Self {
+            embed: gone_embed(embeds.first()),
+            components: Vec::new(),
+            view: View::List { page: 0 },
+            total: 0,
+            card: None,
+            batch: Vec::new(),
+        }
     }
 }
 
@@ -982,6 +1031,209 @@ impl Card {
             }
         }
     }
+}
+
+/// Movie and show quality profiles, for admins to change requests between
+async fn profiles(data: &Data) -> (Option<Profiles>, Option<Profiles>) {
+    let profiles = |media| async move {
+        data.seerr
+            .profiles(&data.http, media)
+            .await
+            .inspect_err(|e| warn!("Fetching quality profiles: {e:#}"))
+            .ok()
+            .flatten()
+    };
+    tokio::join!(profiles(Media::Movie(0)), profiles(Media::Tv(0)))
+}
+
+/// `request` as a post in `guild`'s channels, with buttons for admins
+pub async fn post_card(
+    data: &Data,
+    discord: Arc<Http>,
+    guild: Option<GuildId>,
+    request: Request,
+) -> Result<(CreateEmbed, Vec<CreateActionRow>)> {
+    let viewer = Viewer::post(data, discord, guild).await;
+    let id = format!("{POST}{}", request.id);
+    let screen = Screen::card(data, &viewer, None, request, &id).await?;
+    Ok((screen.embed, screen.components))
+}
+
+/// Rebuilds the post `message` in `channel` of request `id`, after it changed somewhere else
+pub async fn refresh_post(
+    data: &Data,
+    discord: &Arc<Http>,
+    channel: ChannelId,
+    message: MessageId,
+    id: u32,
+) -> Result<()> {
+    let edit = match data.seerr.request_by_id(&data.http, id).await? {
+        Some(request) => {
+            let guild = match channel.to_channel(discord).await? {
+                Channel::Guild(channel) => Some(channel.guild_id),
+                _ => None,
+            };
+            let (embed, components) = post_card(data, discord.clone(), guild, request).await?;
+            EditMessage::new().embed(embed).components(components)
+        }
+        None => {
+            let old = channel.message(discord, message).await?;
+            EditMessage::new()
+                .embed(gone_embed(old.embeds.first()))
+                .components(vec![])
+        }
+    };
+    channel.edit_message(discord, message, edit).await?;
+    Ok(())
+}
+
+/// A post's card once its request is no longer in Seerr
+fn gone_embed(old: Option<&Embed>) -> CreateEmbed {
+    old.cloned()
+        .map_or_else(CreateEmbed::new, CreateEmbed::from)
+        .footer(CreateEmbedFooter::new("No longer in Seerr"))
+}
+
+/// Handles a press on a request post's buttons, or on the batch confirmation they open. Anyone
+/// can refresh; everything else is for admins. Other presses are left alone.
+pub async fn post_press(
+    ctx: &serenity::Context,
+    data: &Data,
+    press: &ComponentInteraction,
+) -> Result<()> {
+    let Some((request, action)) = press
+        .data
+        .custom_id
+        .strip_prefix(POST)
+        .and_then(|rest| rest.split_once('-'))
+    else {
+        return Ok(());
+    };
+    let Ok(request) = request.parse::<u32>() else {
+        return Ok(());
+    };
+    if action != "refresh" && !has_admin_role(data, press.member.as_ref()) {
+        let reply = CreateInteractionResponseMessage::new()
+            .content("Only admins can change requests")
+            .ephemeral(true);
+        press
+            .create_response(ctx, CreateInteractionResponse::Message(reply))
+            .await?;
+        return Ok(());
+    }
+    let id = format!("{POST}{request}");
+    let values: Vec<&str> = match &press.data.kind {
+        ComponentInteractionDataKind::StringSelect { values } => {
+            values.iter().map(String::as_str).collect()
+        }
+        _ => Vec::new(),
+    };
+
+    // Opens the confirmation for approving the batch, just for whoever pressed
+    if action == "batch" {
+        press
+            .create_response(
+                ctx,
+                CreateInteractionResponse::Defer(
+                    CreateInteractionResponseMessage::new().ephemeral(true),
+                ),
+            )
+            .await?;
+        let viewer = Viewer::post(data, ctx.http.clone(), press.guild_id).await;
+        let edit = match Screen::batch(data, &viewer, None, request, &id).await {
+            Ok(Some(screen)) => EditInteractionResponse::new()
+                .embed(screen.embed)
+                .components(screen.components),
+            Ok(None) => EditInteractionResponse::new().content("Nothing to approve together now"),
+            Err(e) => {
+                warn!("Fetching the batch of request {request}: {e:#}");
+                EditInteractionResponse::new().content(UNREACHABLE)
+            }
+        };
+        press.edit_response(ctx, edit).await?;
+        return Ok(());
+    }
+
+    // Acknowledge first: Seerr looks things up on TMDB, which may take longer than the 3 seconds
+    // Discord allows before an interaction fails
+    press
+        .create_response(ctx, CreateInteractionResponse::Acknowledge)
+        .await?;
+    let viewer = Viewer::post(data, ctx.http.clone(), press.guild_id).await;
+
+    // Pressed on the batch confirmation, which then says how it went
+    if action == "approve-all" {
+        let content = match Screen::batch(data, &viewer, None, request, &id).await {
+            Ok(Some(screen)) => approve_all(data, &screen.batch)
+                .await
+                .unwrap_or_else(|| format!("Approved {} requests", screen.batch.len())),
+            Ok(None) => "Nothing to approve together now".into(),
+            Err(e) => {
+                warn!("Fetching the batch of request {request}: {e:#}");
+                UNREACHABLE.into()
+            }
+        };
+        let edit = EditInteractionResponse::new()
+            .content(content)
+            .embeds(vec![])
+            .components(vec![]);
+        press.edit_response(ctx, edit).await?;
+        return Ok(());
+    }
+
+    let action = match action {
+        "refresh" => None,
+        "approve" => Some(Action::Review { approve: true }),
+        "decline" => Some(Action::Review { approve: false }),
+        "cancel" => Some(Action::Cancel),
+        "quality" => Some(Action::Quality(values.first().and_then(|v| v.parse().ok()))),
+        "seasons" => Some(Action::Seasons(
+            values.iter().filter_map(|v| v.parse().ok()).collect(),
+        )),
+        _ => return Ok(()),
+    };
+    let mut notice = None;
+    let screen = match data.seerr.request_by_id(&data.http, request).await {
+        Ok(Some(found)) => {
+            let mut screen = Screen::card(data, &viewer, None, found, &id).await;
+            if let (
+                Some(action),
+                Ok(Screen {
+                    card: Some(card), ..
+                }),
+            ) = (action, &screen)
+            {
+                notice = card.act(data, &viewer, action).await;
+                screen = match data.seerr.request_by_id(&data.http, request).await {
+                    Ok(Some(found)) => Screen::card(data, &viewer, None, found, &id).await,
+                    Ok(None) => Ok(Screen::gone(&press.message.embeds)),
+                    Err(e) => Err(e),
+                };
+            }
+            screen
+        }
+        Ok(None) => Ok(Screen::gone(&press.message.embeds)),
+        Err(e) => Err(e),
+    };
+    match screen {
+        Ok(screen) => {
+            let edit = EditInteractionResponse::new()
+                .embed(screen.embed)
+                .components(screen.components);
+            press.edit_response(ctx, edit).await?;
+        }
+        Err(e) => {
+            warn!("Loading request {request}: {e:#}");
+            notice.get_or_insert_with(|| UNREACHABLE.into());
+        }
+    }
+    if let Some(notice) = notice {
+        let followup = CreateInteractionResponseFollowup::new()
+            .content(notice)
+            .ephemeral(true);
+        press.create_followup(ctx, followup).await?;
+    }
+    Ok(())
 }
 
 /// Approves `batch`, requests by id with their titles, one at a time. Returns which couldn't be

@@ -9,7 +9,8 @@ home media server.
   and are registered in `main.rs` (`FrameworkOptions.commands`). Upstream API
   clients are one module each (`seerr.rs`, `jellyfin.rs`, `arr.rs`,
   `ersatztv.rs`). `webhook.rs` listens for Seerr's webhook, started in `setup`
-  once the gateway is ready, and hands available requests to `available.rs`.
+  once the gateway is ready, and hands new and available requests to
+  `announce.rs`.
 - Config is read from `$TEDBOT_CONFIG`, falling back to `config.toml` in the
   working directory (gitignored; see `config.example.toml`). Secrets go there,
   never in the repo.
@@ -54,18 +55,31 @@ store):
 - **Status command**: Grafana/Prometheus status, either a link to the dashboard
   view or a generated graphic. Grafana's image renderer plugin is awkward on
   macOS; prefer querying Prometheus directly and drawing the chart.
-- **Requests channel**: Seerr requests posted to one channel, with approve and
-  decline buttons visible only to an admin role. Seerr's built-in Discord
-  webhook can post requests but can't act on them, so only the bot can do this.
-  `MEDIA_PENDING` already reaches the bot's webhook.
+- **Requests channel** (done): posts in each of
+  `seerr.webhook.requests_channels` when Seerr's webhook sends `MEDIA_PENDING`
+  or `MEDIA_AUTO_APPROVED` (dotfiles' `seerr.nix` turns that type on). The post
+  is `/requests`' card as an admin sees it (`requests::post_card`), without the
+  list buttons but with 🔄 and a Seerr link button instead of a linked title:
+  Approve, Approve all N (its confirmation is ephemeral), Decline, season and
+  quality menus, or Cancel request. Anyone sees the buttons, so presses are
+  checked with `is_admin`'s role check (`has_admin_role`), except 🔄. The
+  buttons have to outlive any command, so presses come through poise's
+  `event_handler` (`requests::post_press`), with custom ids
+  `request-post:<id>-<action>`. `discord.admin_role`, if set, is pinged for
+  requests waiting for approval (the only allowed mention; the role must be
+  mentionable or the bot allowed to mention all roles). The webhook keeps each
+  request's posts for the run and rebuilds them on `MEDIA_APPROVED`,
+  `MEDIA_DECLINED`, `MEDIA_AVAILABLE` and `MEDIA_FAILED`; after a restart only a
+  press or 🔄 does. `Data` is in an `Arc` so the webhook shares it.
 - **Available channel** (done): "now available" posts in each of
-  `discord.available_channels` when Seerr's webhook sends `MEDIA_AVAILABLE`:
-  poster, title, overview, seasons and requester, with Jellyfin and Seerr link
-  buttons. The requester shows as a mention (no ping: it's in an embed and
-  allowed mentions are empty) when their `discordIds` account is in that
-  channel's server, else by Seerr name. Only posted if the request's movie or
-  seasons are available, and once per request per run. Needs Embed Links in the
-  channel.
+  `seerr.webhook.available_channels` when Seerr's webhook sends
+  `MEDIA_AVAILABLE`: poster, title, overview, seasons and requester, with
+  Jellyfin and Seerr link buttons. Only posted if the request's movie or seasons
+  are available, and once per request per run.
+- Both channels' posts come from `announce.rs`. The requester shows as a mention
+  (no ping: it's in an embed) when their `discordIds` account is in that
+  channel's server, else by Seerr name. They need Send Messages and Embed Links
+  in the channel.
 - **Webhook** (`webhook.rs`, `[seerr.webhook]` config): listens on localhost
   (`Ipv4Addr::LOCALHOST`) at `/seerr`. Seerr has only one webhook and Moonfin (a
   Jellyfin plugin, at `/Moonfin/Seerr/Webhook` on Jellyfin) used it, so the bot
@@ -151,9 +165,10 @@ already comes to the bot (`webhook.rs`); new Seerr events go there. Any other
 listener binds to localhost too.
 
 Anything that controls qBittorrent, approves requests, or deletes media must be
-restricted to admins: `discord.admin_users` or members with `discord.admin_role`
-(`commands::is_admin`). Discord's Administrator permission doesn't count; the
-server's admins aren't necessarily the media server's.
+restricted to admins: members with `discord.admin_role` (`commands::is_admin`;
+no role configured means no admins, and nobody is an admin in DMs). Discord's
+Administrator permission doesn't count; the server's admins aren't necessarily
+the media server's.
 
 ## Deployment
 

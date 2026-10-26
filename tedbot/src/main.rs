@@ -5,7 +5,7 @@
 
 #![warn(clippy::all, clippy::nursery, rust_2018_idioms)]
 
-use std::{env, fs, process, time::Duration};
+use std::{env, fs, process, sync::Arc, time::Duration};
 
 use anyhow::{Context as _, Error, Result};
 use poise::{
@@ -15,8 +15,8 @@ use poise::{
 };
 use tracing::{Level, error, info, warn};
 
+mod announce;
 mod arr;
-mod available;
 mod commands;
 mod config;
 mod ersatztv;
@@ -41,12 +41,11 @@ pub struct Data {
     sonarr: Option<arr::Arr>,
     /// Members with this role count as admins
     admin_role: Option<serenity::RoleId>,
-    /// Users who count as admins anywhere
-    admin_users: Vec<serenity::UserId>,
 }
-type Context<'a> = poise::Context<'a, Data, Error>;
-type Framework = poise::Framework<Data, Error>;
-type FrameworkError<'a> = poise::FrameworkError<'a, Data, Error>;
+// In an `Arc` so the webhook can share it
+type Context<'a> = poise::Context<'a, Arc<Data>, Error>;
+type Framework = poise::Framework<Arc<Data>, Error>;
+type FrameworkError<'a> = poise::FrameworkError<'a, Arc<Data>, Error>;
 
 /// Runs the bot, exiting with status 1 and the error chain if it stops
 #[tokio::main]
@@ -98,22 +97,22 @@ async fn run() -> Result<()> {
         on_error: |e| Box::pin(on_error(e)),
         pre_command: |ctx| Box::pin(pre_command(ctx)),
         command_check: Some(|ctx| Box::pin(command_check(ctx))),
+        event_handler: |ctx, event| Box::pin(event_handler(ctx, event)),
         ..FrameworkOptions::default()
     };
 
     let activity = cfg.discord.activity;
     let admin_role = cfg.discord.admin_role;
-    let admin_users = cfg.discord.admin_users;
     let webhook = match cfg.seerr.webhook {
         Some(c) => {
-            Some(webhook::Listener::bind(c.port, c.forward, cfg.discord.available_channels).await?)
+            let targets = announce::Targets {
+                requests: c.requests_channels,
+                available: c.available_channels,
+                admin_role,
+            };
+            Some(webhook::Listener::bind(c.port, c.forward, targets).await?)
         }
-        None => {
-            if !cfg.discord.available_channels.is_empty() {
-                warn!("discord.available_channels needs [seerr.webhook]");
-            }
-            None
-        }
+        None => None,
     };
     let http = reqwest::Client::new();
     let data = Data {
@@ -137,7 +136,6 @@ async fn run() -> Result<()> {
             api_key: c.api_key,
         }),
         admin_role,
-        admin_users,
     };
     let framework = Framework::builder()
         .setup(move |ctx, ready, framework| {
@@ -170,6 +168,20 @@ async fn on_error(err: FrameworkError<'_>) {
     }
 }
 
+/// Handles presses on request posts, whose buttons outlive any command
+async fn event_handler(
+    ctx: poise::FrameworkContext<'_, Arc<Data>, Error>,
+    event: &serenity::FullEvent,
+) -> Result<()> {
+    if let serenity::FullEvent::InteractionCreate {
+        interaction: serenity::Interaction::Component(press),
+    } = event
+    {
+        commands::requests::post_press(ctx.serenity_context, ctx.user_data, press).await?;
+    }
+    Ok(())
+}
+
 /// Logs who ran which command
 #[tracing::instrument(skip_all)]
 async fn pre_command(ctx: Context<'_>) {
@@ -192,7 +204,7 @@ async fn setup(
     cfg: Option<config::DiscordActivityConfig>,
     webhook: Option<webhook::Listener>,
     data: Data,
-) -> Result<Data> {
+) -> Result<Arc<Data>> {
     register_globally(ctx, &framework.options().commands).await?;
     clear_guild_commands(ctx, ready).await;
 
@@ -206,8 +218,9 @@ async fn setup(
     if let Some(cfg) = &cfg {
         activity(ctx, cfg);
     }
+    let data = Arc::new(data);
     if let Some(webhook) = webhook {
-        webhook.spawn(ctx.http.clone(), data.http.clone(), data.seerr.clone());
+        webhook.spawn(ctx.http.clone(), data.clone());
     }
 
     Ok(data)

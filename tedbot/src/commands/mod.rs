@@ -8,22 +8,20 @@ pub mod requests;
 pub mod streams;
 pub mod tv;
 
-use crate::Context;
+use poise::serenity_prelude::Member;
 
-/// Whether the invoker is one of the configured admin users or has the configured admin role.
-/// Discord's Administrator permission doesn't count, since the server's admins aren't necessarily
-/// the media server's.
+use crate::{Context, Data};
+
+/// Whether the invoker has the configured admin role, so never in DMs. Discord's Administrator
+/// permission doesn't count, since the server's admins aren't necessarily the media server's.
 async fn is_admin(ctx: Context<'_>) -> bool {
-    let data = ctx.data();
-    if data.admin_users.contains(&ctx.author().id) {
-        return true;
-    }
-    let Some(role) = data.admin_role else {
-        return false;
-    };
-    ctx.author_member()
-        .await
-        .is_some_and(|member| member.roles.contains(&role))
+    has_admin_role(ctx.data(), ctx.author_member().await.as_deref())
+}
+
+/// Whether `member` has the configured admin role. `None` outside a server.
+fn has_admin_role(data: &Data, member: Option<&Member>) -> bool {
+    data.admin_role
+        .is_some_and(|role| member.is_some_and(|m| m.roles.contains(&role)))
 }
 
 /// Backslash-escapes Discord markdown characters so titles show literally
