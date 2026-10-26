@@ -6,6 +6,7 @@
 //! up to date as Seerr says their requests change.
 //!
 //! Listens on localhost only. Point Seerr's webhook URL at `http://localhost:<port>/seerr`.
+//! `GET /health` answers 200, for uptime probes; it's only served once Discord is connected.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -20,7 +21,7 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse as _, Response},
-    routing::post,
+    routing::{get, post},
 };
 use futures::future::join_all;
 use poise::serenity_prelude::{ChannelId, Http, MessageId};
@@ -94,7 +95,10 @@ impl Listener {
             posted: Mutex::default(),
             posts: Mutex::default(),
         });
-        let app = Router::new().route("/seerr", post(notify)).with_state(hook);
+        let app = Router::new()
+            .route("/seerr", post(notify))
+            .route("/health", get(|| async { StatusCode::OK }))
+            .with_state(hook);
         if let Ok(addr) = self.listener.local_addr() {
             info!("Listening for Seerr's webhook on {addr}");
         }
@@ -335,5 +339,8 @@ mod tests {
         let (auth, forwarded) = seen.lock().unwrap().take().unwrap();
         assert_eq!(auth, "secret");
         assert_eq!(forwarded, body.as_bytes());
+
+        let health = reqwest::get(format!("http://{addr}/health")).await.unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
     }
 }

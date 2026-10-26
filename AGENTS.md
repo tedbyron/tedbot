@@ -81,15 +81,16 @@ store):
   channel's server, else by Seerr name. They need Send Messages and Embed Links
   in the channel.
 - **Webhook** (`webhook.rs`, `[seerr.webhook]` config): listens on localhost
-  (`Ipv4Addr::LOCALHOST`) at `/seerr`. Seerr has only one webhook and Moonfin (a
-  Jellyfin plugin, at `/Moonfin/Seerr/Webhook` on Jellyfin) used it, so the bot
-  forwards every notification to each of `seerr.webhook.forward` (one URL or a
-  list) at once with its Content-Type and Authorization, and answers Seerr with
-  the first failed response, else the first one. Logs leave out the query, which
-  may hold a secret. Payloads are whatever Seerr's template makes (Moonfin's);
-  the bot only reads `notification_type` and `request.request_id`, both in
-  Seerr's default and Moonfin's. Seerr's webhook URL is set in dotfiles'
-  `seerr.nix`.
+  (`Ipv4Addr::LOCALHOST`) at `/seerr`, plus `GET /health` (200) for the
+  dotfiles' Prometheus probe and status page; both are served only once Discord
+  is connected. Seerr has only one webhook and Moonfin (a Jellyfin plugin, at
+  `/Moonfin/Seerr/Webhook` on Jellyfin) used it, so the bot forwards every
+  notification to each of `seerr.webhook.forward` (one URL or a list) at once
+  with its Content-Type and Authorization, and answers Seerr with the first
+  failed response, else the first one. Logs leave out the query, which may hold
+  a secret. Payloads are whatever Seerr's template makes (Moonfin's); the bot
+  only reads `notification_type` and `request.request_id`, both in Seerr's
+  default and Moonfin's. Seerr's webhook URL is set in dotfiles' `seerr.nix`.
 - **`/request <title>`** (done): search Seerr, one ephemeral card per result
   with poster, year, overview and status, ◀ ▶ through results, and a Request
   button. Shows get a season dropdown (no pick means all open seasons; Discord
