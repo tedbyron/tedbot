@@ -189,6 +189,13 @@ impl Arr {
         Ok(seasons)
     }
 
+    /// Sonarr: the seasons of the show with TVDB id `tvdb_id` with a file for every monitored
+    /// episode that's aired
+    pub async fn complete_seasons(&self, http: &reqwest::Client, tvdb_id: u32) -> Result<Vec<u32>> {
+        let shows: Vec<Value> = self.get(http, &format!("/series?tvdbId={tvdb_id}")).await?;
+        Ok(shows.first().map(complete).unwrap_or_default())
+    }
+
     /// Radarr: removes the movie with TMDB id `tmdb_id` and its downloads, unless it's been
     /// downloaded already
     pub async fn remove_movie(&self, http: &reqwest::Client, tmdb_id: u32) -> Result<Removed> {
@@ -279,6 +286,22 @@ impl Arr {
     }
 }
 
+/// The seasons of a Sonarr show with a file for every monitored episode that's aired
+fn complete(show: &Value) -> Vec<u32> {
+    show["seasons"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| {
+            let count = |field: &str| s["statistics"][field].as_u64().unwrap_or_default();
+            s["monitored"].as_bool() == Some(true)
+                && count("episodeCount") > 0
+                && count("episodeFileCount") >= count("episodeCount")
+        })
+        .filter_map(|s| u32::try_from(s["seasonNumber"].as_u64()?).ok())
+        .collect()
+}
+
 /// Whether a Sonarr show has any season monitored or any episode file left
 fn in_use(show: &Value) -> bool {
     show["seasons"].as_array().into_iter().flatten().any(|s| {
@@ -309,6 +332,26 @@ mod tests {
             Download::Queued
         );
         assert_eq!(item(r#"{"id": 1}"#), Download::Queued);
+    }
+
+    #[test]
+    fn complete_seasons() {
+        let show: Value = serde_json::from_str(
+            r#"{"seasons": [
+                {"seasonNumber": 0, "monitored": false,
+                 "statistics": {"episodeCount": 0, "episodeFileCount": 0}},
+                {"seasonNumber": 1, "monitored": true,
+                 "statistics": {"episodeCount": 9, "episodeFileCount": 9}},
+                {"seasonNumber": 2, "monitored": true,
+                 "statistics": {"episodeCount": 12, "episodeFileCount": 11}},
+                {"seasonNumber": 3, "monitored": false,
+                 "statistics": {"episodeCount": 15, "episodeFileCount": 15}},
+                {"seasonNumber": 4, "monitored": true,
+                 "statistics": {"episodeCount": 0, "episodeFileCount": 0}}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(complete(&show), [1]);
     }
 
     #[test]

@@ -335,7 +335,9 @@ impl Card {
     ) -> Result<Self> {
         let index = index % results.len();
         let media = results[index];
-        let details = data.seerr.details(&data.http, media).await?;
+        let mut details = data.seerr.details(&data.http, media).await?;
+        check_partial(data, &mut details, media, false).await;
+        check_partial(data, &mut details, media, true).await;
         let title = seerr::with_year(&details.title, details.release_date.as_deref());
         let tvdb_id = details.media_info.as_ref().and_then(|m| m.tvdb_id);
 
@@ -756,6 +758,33 @@ async fn downloads_if(
             );
         })
         .unwrap_or_default()
+}
+
+/// Counts seasons of `details`' HD or 4K version that Seerr has as partly downloaded as
+/// downloaded if Sonarr has a file for every monitored episode. Seerr counts a season's episodes
+/// by TMDB, which can split them differently from TVDB, which Sonarr goes by. Best effort, like
+/// [`downloads_if`].
+pub(super) async fn check_partial(data: &Data, details: &mut Details, media: Media, is_4k: bool) {
+    let Some(info) = &details.media_info else {
+        return;
+    };
+    let partial = info.seasons.iter().any(|s| {
+        let status = if is_4k { s.status_4k } else { s.status };
+        status == Status::PartiallyAvailable
+    });
+    let (Some(arr), Some(tvdb_id)) = (arr(data, media, is_4k), info.tvdb_id) else {
+        return;
+    };
+    if !partial || !matches!(media, Media::Tv(_)) {
+        return;
+    }
+    match arr.complete_seasons(&data.http, tvdb_id).await {
+        Ok(complete) => details.mark_downloaded(&complete, is_4k),
+        Err(e) => warn!(
+            "Checking {}'s files of {media}: {e:#}",
+            arr_name(media, is_4k)
+        ),
+    }
 }
 
 /// How far the download of what `request` asked for has got, if it's been sent to Radarr or

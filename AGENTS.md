@@ -90,6 +90,10 @@ store):
 - Approved but not downloaded reads "download queued" or "download started",
   by whether Radarr's or Sonarr's queue has any bytes of it (`arr.rs`), checked
   only for what's approved.
+- Seerr counts a season's episodes by TMDB, which can split seasons differently
+  from TVDB (Sonarr's), so a finished season can stay "partly downloaded". The
+  bot counts it as downloaded when Sonarr has a file for every monitored episode
+  (`check_partial`).
 - Both channels' posts come from `announce.rs`. The requester shows as a mention
   (no ping: it's in an embed) when their `discordIds` account is in that
   channel's server, else by Seerr name. They need Send Messages and Embed Links

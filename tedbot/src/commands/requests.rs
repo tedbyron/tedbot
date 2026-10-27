@@ -34,7 +34,7 @@ use tracing::warn;
 
 use super::{
     escape, has_admin_role, is_admin, remove_buttons,
-    request::{can_unsend, cancel, ranges, request_download, status, truncate},
+    request::{can_unsend, cancel, check_partial, ranges, request_download, status, truncate},
 };
 use crate::{
     Context, Data,
@@ -511,11 +511,14 @@ impl Screen {
         // Requests don't carry titles, so each one's details are looked up
         let details = join_all(listed.requests.iter().map(|r| async move {
             let media = r.media()?;
-            data.seerr
+            let mut details = data
+                .seerr
                 .details(&data.http, media)
                 .await
                 .inspect_err(|e| warn!("Fetching {media}: {e:#}"))
-                .ok()
+                .ok()?;
+            check_partial(data, &mut details, media, r.is_4k).await;
+            Some(details)
         }));
         let names = join_all(listed.requests.iter().map(|r| async move {
             match &r.requested_by {
@@ -650,7 +653,8 @@ impl Screen {
         let media = request
             .media()
             .context("request isn't for a movie or show")?;
-        let details = data.seerr.details(&data.http, media).await?;
+        let mut details = data.seerr.details(&data.http, media).await?;
+        check_partial(data, &mut details, media, request.is_4k).await;
         let title = seerr::with_year(&details.title, details.release_date.as_deref());
 
         let mut embed = CreateEmbed::new().title(&title);

@@ -612,6 +612,28 @@ impl Details {
         self.season_status_of(n, false)
     }
 
+    /// Counts `seasons` of the HD or 4K version as downloaded where Seerr has them as partly
+    /// downloaded
+    pub fn mark_downloaded(&mut self, seasons: &[u32], is_4k: bool) {
+        let Some(info) = &mut self.media_info else {
+            return;
+        };
+        for season in info
+            .seasons
+            .iter_mut()
+            .filter(|s| seasons.contains(&s.season_number))
+        {
+            let status = if is_4k {
+                &mut season.status_4k
+            } else {
+                &mut season.status
+            };
+            if *status == Status::PartiallyAvailable {
+                *status = Status::Available;
+            }
+        }
+    }
+
     /// Where the HD or 4K copy of season `n` stands, as [`Self::season_status`]
     pub fn season_status_of(&self, n: u32, is_4k: bool) -> Status {
         let Some(info) = &self.media_info else {
