@@ -162,9 +162,8 @@ impl Hook {
             return;
         }
         let request = match self.data.seerr.request_by_id(&self.data.http, id).await {
-            // Only the default server's availability is checked
-            Ok(Some(request)) if !(request.is4k && event == Event::Available) => request,
-            Ok(_) => return,
+            Ok(Some(request)) => request,
+            Ok(None) => return,
             Err(e) => {
                 warn!("Fetching request {id}: {e:#}");
                 self.posted.lock().unwrap().remove(&key);
@@ -316,6 +315,7 @@ mod tests {
             jellyfin: Jellyfin {
                 url: unused(),
                 api_key: String::new(),
+                moonfin: false,
             },
             seerr: Seerr {
                 url: unused(),
@@ -324,6 +324,8 @@ mod tests {
             },
             radarr: None,
             sonarr: None,
+            radarr_4k: None,
+            sonarr_4k: None,
             admin_role: None,
         };
         listener.spawn(Arc::new(Http::new("")), Arc::new(data));

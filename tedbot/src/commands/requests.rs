@@ -300,10 +300,8 @@ struct Viewer {
     /// Whether the invoker is a bot admin, who sees everyone's requests and may act on them
     admin: bool,
     filter: Filter,
-    /// Movie quality profiles, admins only
-    movie_profiles: Option<Profiles>,
-    /// Show quality profiles, admins only
-    tv_profiles: Option<Profiles>,
+    /// The default HD and 4K servers' movie and show quality profiles, admins only
+    profiles: Vec<Profiles>,
     /// The server the command was used in, whose members show by their Discord account
     guild: Option<GuildId>,
     /// For looking up members
@@ -315,17 +313,16 @@ struct Viewer {
 impl Viewer {
     /// Fetches the quality profiles for admins. Without them, there's no quality menu.
     async fn load(ctx: Context<'_>, user: Option<Requester>, admin: bool, filter: Filter) -> Self {
-        let (movie_profiles, tv_profiles) = if admin {
+        let profiles = if admin {
             profiles(ctx.data()).await
         } else {
-            (None, None)
+            Vec::new()
         };
         Self {
             user,
             admin,
             filter,
-            movie_profiles,
-            tv_profiles,
+            profiles,
             guild: ctx.guild_id(),
             discord: ctx.serenity_context().http.clone(),
             members: Mutex::default(),
@@ -334,13 +331,11 @@ impl Viewer {
 
     /// An admin's view, for request posts in `guild`'s channels, which only admins can act on
     async fn post(data: &Data, discord: Arc<Http>, guild: Option<GuildId>) -> Self {
-        let (movie_profiles, tv_profiles) = profiles(data).await;
         Self {
             user: None,
             admin: true,
             filter: Filter::All,
-            movie_profiles,
-            tv_profiles,
+            profiles: profiles(data).await,
             guild,
             discord,
             members: Mutex::default(),
@@ -395,15 +390,15 @@ impl Viewer {
         }
     }
 
-    /// The profiles `request` can be changed between: the default server's, if that's where
-    /// it's going
+    /// The profiles `request` can be changed between: the default HD or 4K server's, if that's
+    /// where it's going
     fn profiles(&self, request: &Request) -> Option<&Profiles> {
-        let profiles = match request.media()? {
-            Media::Movie(_) => self.movie_profiles.as_ref(),
-            Media::Tv(_) => self.tv_profiles.as_ref(),
-        }?;
-        (!request.is4k && request.server_id.is_none_or(|s| s == profiles.server))
-            .then_some(profiles)
+        let movies = matches!(request.media()?, Media::Movie(_));
+        self.profiles.iter().find(|p| {
+            p.movies == movies
+                && p.is4k == request.is4k
+                && request.server_id.is_none_or(|s| s == p.server)
+        })
     }
 }
 
@@ -684,11 +679,10 @@ impl Screen {
             embed = embed.footer(CreateEmbedFooter::new(format!("{} of {total}", index + 1)));
         }
 
-        let can_unsend = can_unsend(data, media);
         let cancellable: Vec<Cancellable> = details
             .cancellable(viewer.user.map(|u| u.id), viewer.admin)
             .into_iter()
-            .filter(|c| c.id == request.id && (can_unsend || !c.sent))
+            .filter(|c| c.id == request.id && (can_unsend(data, media, c.is4k) || !c.sent))
             .collect();
         let reviewable = viewer.admin && request.status == RequestStatus::Pending;
         // How many pending requests would be approved together, itself included
@@ -812,7 +806,7 @@ impl Screen {
         if let Some(url) = details
             .media_info
             .as_ref()
-            .and_then(|m| m.media_url.as_ref())
+            .and_then(|m| m.jellyfin_url(request.is4k))
         {
             buttons.push(CreateButton::new_link(url).label("Jellyfin"));
         }
@@ -1020,17 +1014,25 @@ impl Card {
     }
 }
 
-/// Movie and show quality profiles, for admins to change requests between
-async fn profiles(data: &Data) -> (Option<Profiles>, Option<Profiles>) {
-    let profiles = |media| async move {
+/// The default HD and 4K servers' movie and show quality profiles, for admins to change
+/// requests between
+async fn profiles(data: &Data) -> Vec<Profiles> {
+    let profiles = |media, is4k| async move {
         data.seerr
-            .profiles(&data.http, media)
+            .profiles(&data.http, media, is4k)
             .await
             .inspect_err(|e| warn!("Fetching quality profiles: {e:#}"))
             .ok()
             .flatten()
     };
-    tokio::join!(profiles(Media::Movie(0)), profiles(Media::Tv(0)))
+    let all: [Option<Profiles>; 4] = tokio::join!(
+        profiles(Media::Movie(0), false),
+        profiles(Media::Tv(0), false),
+        profiles(Media::Movie(0), true),
+        profiles(Media::Tv(0), true),
+    )
+    .into();
+    all.into_iter().flatten().collect()
 }
 
 /// `request` as a post in `guild`'s channels, with buttons for admins

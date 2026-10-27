@@ -27,7 +27,7 @@ use tracing::warn;
 use super::{escape, is_admin, remove_buttons};
 use crate::{
     Context, Data,
-    arr::Removed,
+    arr::{Arr, Removed},
     seerr::{
         self, Cancellable, Changed, Media, Profile, Quotas, Requested, Requester, SearchResult,
         Status,
@@ -248,7 +248,7 @@ impl Viewer {
                 return Vec::new();
             }
             data.seerr
-                .profiles(&data.http, media)
+                .profiles(&data.http, media, false)
                 .await
                 .inspect_err(|e| warn!("Fetching quality profiles: {e:#}"))
                 .ok()
@@ -390,11 +390,11 @@ impl Card {
             Media::Tv(_) => &viewer.tv_profiles,
         };
         let can_bypass = limited && viewer.user.is_some_and(Requester::can_bypass_quota);
-        let can_unsend = can_unsend(data, media);
+        // This card requests and shows the HD copy, so 4K requests are left to `/requests`
         let cancellable = details
             .cancellable(viewer.user.map(|u| u.id), viewer.admin)
             .into_iter()
-            .filter(|c| can_unsend || !c.sent)
+            .filter(|c| !c.is4k && (can_unsend(data, media, false) || !c.sent))
             .collect();
 
         Ok(Self {
@@ -623,18 +623,20 @@ async fn try_cancel(
     cancellable: &[Cancellable],
     changed: &mut bool,
 ) -> Result<Option<String>> {
-    let sent: Vec<&Cancellable> = cancellable.iter().filter(|c| c.sent).collect();
-    if !sent.is_empty() {
+    // The HD and 4K copies each have their own Radarr or Sonarr
+    for is4k in [false, true] {
+        let sent: Vec<&Cancellable> = cancellable
+            .iter()
+            .filter(|c| c.sent && c.is4k == is4k)
+            .collect();
+        if sent.is_empty() {
+            continue;
+        }
+        let name = arr_name(media, is4k);
+        let arr = arr(data, media, is4k).with_context(|| format!("{name} isn't configured"))?;
         let removed = match media {
-            Media::Movie(tmdb_id) => {
-                let radarr = data.radarr.as_ref().context("Radarr isn't configured")?;
-                radarr
-                    .remove_movie(&data.http, tmdb_id)
-                    .await
-                    .context("Radarr")?
-            }
+            Media::Movie(tmdb_id) => arr.remove_movie(&data.http, tmdb_id).await,
             Media::Tv(_) => {
-                let sonarr = data.sonarr.as_ref().context("Sonarr isn't configured")?;
                 let tvdb_id = tvdb_id.context("Seerr has no TVDB id")?;
                 let mut seasons: Vec<u32> = sent
                     .iter()
@@ -642,12 +644,10 @@ async fn try_cancel(
                     .collect();
                 seasons.sort_unstable();
                 seasons.dedup();
-                sonarr
-                    .remove_seasons(&data.http, tvdb_id, &seasons)
-                    .await
-                    .context("Sonarr")?
+                arr.remove_seasons(&data.http, tvdb_id, &seasons).await
             }
-        };
+        }
+        .context(name)?;
         if removed == Removed::Downloaded {
             return Ok(Some(
                 "It's already been downloaded, so it can't be cancelled".into(),
@@ -666,12 +666,30 @@ async fn try_cancel(
     Ok(None)
 }
 
-/// Whether Radarr or Sonarr is configured for `media`, so approved requests can be taken back out
-pub(super) const fn can_unsend(data: &Data, media: Media) -> bool {
-    match media {
-        Media::Movie(_) => data.radarr.is_some(),
-        Media::Tv(_) => data.sonarr.is_some(),
+/// The Radarr or Sonarr that `media`'s HD or 4K copy goes to, if it's configured
+const fn arr(data: &Data, media: Media, is4k: bool) -> Option<&Arr> {
+    match (media, is4k) {
+        (Media::Movie(_), false) => data.radarr.as_ref(),
+        (Media::Tv(_), false) => data.sonarr.as_ref(),
+        (Media::Movie(_), true) => data.radarr_4k.as_ref(),
+        (Media::Tv(_), true) => data.sonarr_4k.as_ref(),
     }
+}
+
+/// [`arr`]'s name, for errors
+const fn arr_name(media: Media, is4k: bool) -> &'static str {
+    match (media, is4k) {
+        (Media::Movie(_), false) => "Radarr",
+        (Media::Tv(_), false) => "Sonarr",
+        (Media::Movie(_), true) => "4K Radarr",
+        (Media::Tv(_), true) => "4K Sonarr",
+    }
+}
+
+/// Whether Radarr or Sonarr is configured for `media`'s HD or 4K copy, so approved requests for
+/// it can be taken back out
+pub(super) const fn can_unsend(data: &Data, media: Media, is4k: bool) -> bool {
+    arr(data, media, is4k).is_some()
 }
 
 /// How a movie or season's status reads on the card

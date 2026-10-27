@@ -23,6 +23,10 @@ pub struct Config {
     pub radarr: Option<RadarrConfig>,
     /// Optional Sonarr connection info, for taking approved show requests back out
     pub sonarr: Option<SonarrConfig>,
+    /// Optional Radarr for 4K requests (Seerr's 4K server), for taking them back out
+    pub radarr_4k: Option<Radarr4kConfig>,
+    /// Optional Sonarr for 4K requests (Seerr's 4K server), for taking them back out
+    pub sonarr_4k: Option<Sonarr4kConfig>,
 }
 
 /// Discord connection info
@@ -74,6 +78,9 @@ pub struct JellyfinConfig {
     pub url: String,
     /// API key made for the bot under Dashboard → API Keys
     pub api_key: String,
+    /// Whether Jellyfin has the Moonfin plugin, so "now available" posts link to Moonfin Web too
+    #[serde(default)]
+    pub moonfin: bool,
 }
 
 fn default_jellyfin_url() -> String {
@@ -124,6 +131,34 @@ pub struct SonarrConfig {
 
 fn default_sonarr_url() -> String {
     "http://localhost:8989".into()
+}
+
+/// 4K Radarr connection info
+#[derive(Debug, Deserialize)]
+pub struct Radarr4kConfig {
+    /// Base URL, without `/api/v3`. Defaults to `http://localhost:7879`.
+    #[serde(default = "default_radarr_4k_url")]
+    pub url: String,
+    /// API key from Settings → General
+    pub api_key: String,
+}
+
+fn default_radarr_4k_url() -> String {
+    "http://localhost:7879".into()
+}
+
+/// 4K Sonarr connection info
+#[derive(Debug, Deserialize)]
+pub struct Sonarr4kConfig {
+    /// Base URL, without `/api/v3`. Defaults to `http://localhost:8990`.
+    #[serde(default = "default_sonarr_4k_url")]
+    pub url: String,
+    /// API key from Settings → General
+    pub api_key: String,
+}
+
+fn default_sonarr_4k_url() -> String {
+    "http://localhost:8990".into()
 }
 
 /// Listener for Seerr's webhook, on localhost

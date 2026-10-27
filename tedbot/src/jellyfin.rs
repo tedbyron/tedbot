@@ -14,6 +14,8 @@ const TICKS_PER_SECOND: u64 = 10_000_000;
 pub struct Jellyfin {
     pub url: String,
     pub api_key: String,
+    /// Whether it has the Moonfin plugin
+    pub moonfin: bool,
 }
 
 /// Response of `GET /Items`. Only the fields we read are deserialized.

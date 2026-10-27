@@ -74,8 +74,14 @@ store):
 - **Available channel** (done): "now available" posts in each of
   `seerr.webhook.available_channels` when Seerr's webhook sends
   `MEDIA_AVAILABLE`: poster, title, overview, seasons and requester, with
-  Jellyfin and Seerr link buttons. Only posted if the request's movie or seasons
-  are available, and once per request per run.
+  Jellyfin, Moonfin Web (`jellyfin.moonfin`) and Seerr link buttons. Only posted
+  if the request's movie or seasons are available, and once per request per run.
+- 4K requests (dotfiles' `radarr-4k`/`sonarr-4k`, Seerr's default 4K servers)
+  are read from Seerr's `status4k`, `mediaUrl4k` and `jellyfinMediaId4k`, and
+  marked "(4K)". Cancelling one takes it out of the 4K Radarr or Sonarr
+  (optional `[radarr_4k]`/`[sonarr_4k]` config), and admins pick its quality
+  from Seerr's default 4K server's profiles. `/request` only requests and
+  cancels HD, so its cards leave 4K requests to `/requests`.
 - Both channels' posts come from `announce.rs`. The requester shows as a mention
   (no ping: it's in an embed) when their `discordIds` account is in that
   channel's server, else by Seerr name. They need Send Messages and Embed Links

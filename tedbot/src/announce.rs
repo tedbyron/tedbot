@@ -134,10 +134,12 @@ async fn available(
         return Ok(None);
     }
 
-    let mut embed = CreateEmbed::new().title(seerr::with_year(
-        &details.title,
-        details.release_date.as_deref(),
-    ));
+    let title = seerr::with_year(&details.title, details.release_date.as_deref());
+    let mut embed = CreateEmbed::new().title(if request.is4k {
+        format!("{title} (4K)")
+    } else {
+        title
+    });
     if let Some(overview) = details.overview.as_deref().filter(|o| !o.is_empty()) {
         embed = embed.description(truncate(overview, OVERVIEW_MAX));
     }
@@ -147,14 +149,19 @@ async fn available(
     if !request.seasons.is_empty() {
         embed = embed.field("Seasons", ranges(&request.season_numbers()), true);
     }
-    let jellyfin = details
-        .media_info
-        .as_ref()
-        .and_then(|m| m.media_url.clone());
-    let links: Vec<CreateButton> = [("Jellyfin", jellyfin), ("Seerr", data.seerr.page(media))]
-        .into_iter()
-        .filter_map(|(label, url)| Some(CreateButton::new_link(url?).label(label)))
-        .collect();
+    let info = details.media_info.as_ref();
+    let jellyfin = info.and_then(|m| m.jellyfin_url(request.is4k).map(str::to_owned));
+    let moonfin = info
+        .filter(|_| data.jellyfin.moonfin)
+        .and_then(|m| m.moonfin_url(request.is4k));
+    let links: Vec<CreateButton> = [
+        ("Jellyfin", jellyfin),
+        ("Moonfin", moonfin),
+        ("Seerr", data.seerr.page(media)),
+    ]
+    .into_iter()
+    .filter_map(|(label, url)| Some(CreateButton::new_link(url?).label(label)))
+    .collect();
     let components = if links.is_empty() {
         Vec::new()
     } else {

@@ -116,8 +116,12 @@ pub struct Profile {
 /// The quality profiles on a Radarr or Sonarr server
 #[derive(Clone, Debug, Default)]
 pub struct Profiles {
-    /// Seerr's id for the server
+    /// Seerr's id for the server, unique among the Radarrs or the Sonarrs
     pub server: u32,
+    /// Whether it's the server for movies (Radarr) rather than shows (Sonarr)
+    pub movies: bool,
+    /// Whether it's a 4K server
+    pub is4k: bool,
     pub list: Vec<Profile>,
 }
 
@@ -290,8 +294,17 @@ pub struct MediaInfo {
     /// Shows only, once Seerr has looked it up
     pub tvdb_id: Option<u32>,
     pub status: Status,
+    /// The 4K copy's
+    #[serde(default)]
+    pub status4k: Status,
     /// Jellyfin page, once it's available
     pub media_url: Option<String>,
+    #[serde(rename = "mediaUrl4k")]
+    pub media_url_4k: Option<String>,
+    /// Jellyfin item id, once it's available
+    pub jellyfin_media_id: Option<String>,
+    #[serde(rename = "jellyfinMediaId4k")]
+    pub jellyfin_media_id_4k: Option<String>,
     /// Per-season status, shows only
     #[serde(default)]
     pub seasons: Vec<SeasonInfo>,
@@ -305,6 +318,9 @@ pub struct MediaInfo {
 pub struct SeasonInfo {
     pub season_number: u32,
     pub status: Status,
+    /// The 4K copy's
+    #[serde(default)]
+    pub status4k: Status,
 }
 
 /// A request for a movie or some seasons of a show
@@ -410,10 +426,11 @@ pub struct RequestSeason {
 }
 
 /// Where a movie or season stands. Seerr's unknown and deleted are both [`Self::Missing`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(from = "u8")]
 pub enum Status {
     /// Not requested, or deleted since
+    #[default]
     Missing,
     /// Waiting for approval
     Pending,
@@ -460,12 +477,43 @@ impl From<u8> for RequestStatus {
     }
 }
 
+impl MediaInfo {
+    /// The Jellyfin page of the HD or 4K copy
+    pub fn jellyfin_url(&self, is4k: bool) -> Option<&str> {
+        if is4k {
+            self.media_url_4k.as_deref()
+        } else {
+            self.media_url.as_deref()
+        }
+    }
+
+    /// The HD or 4K copy's page in Moonfin Web, which the Moonfin plugin serves on the Jellyfin
+    /// server that [`Self::jellyfin_url`] points to
+    pub fn moonfin_url(&self, is4k: bool) -> Option<String> {
+        let (server, _) = self.jellyfin_url(is4k)?.split_once("/web/")?;
+        let id = if is4k {
+            &self.jellyfin_media_id_4k
+        } else {
+            &self.jellyfin_media_id
+        };
+        Some(format!("{server}/Moonfin/Web/item/{}", id.as_deref()?))
+    }
+}
+
 impl Details {
     /// Where the movie, or the whole show, stands
     pub fn status(&self) -> Status {
-        self.media_info
-            .as_ref()
-            .map_or(Status::Missing, |m| m.status)
+        self.status_of(false)
+    }
+
+    /// Where the HD or 4K copy of the movie, or the whole show, stands
+    fn status_of(&self, is4k: bool) -> Status {
+        self.media_info.as_ref().map_or(
+            Status::Missing,
+            |m| {
+                if is4k { m.status4k } else { m.status }
+            },
+        )
     }
 
     /// Seasons that can be requested, in order: not specials, not empty
@@ -477,8 +525,8 @@ impl Details {
     }
 
     /// Requests the viewer may cancel: ones waiting for approval or approved but not downloaded
-    /// yet, not even in part. As `admin`, anyone's; otherwise only Seerr user `user`'s own.
-    /// Declined and 4K requests are left out.
+    /// yet (in the copy they asked for, HD or 4K), not even in part. As `admin`, anyone's;
+    /// otherwise only Seerr user `user`'s own. Declined requests are left out.
     pub fn cancellable(&self, user: Option<u32>, admin: bool) -> Vec<Cancellable> {
         let Some(info) = &self.media_info else {
             return Vec::new();
@@ -487,21 +535,23 @@ impl Details {
         info.requests
             .iter()
             .filter(|r| {
-                !r.is4k
-                    && matches!(r.status, RequestStatus::Pending | RequestStatus::Approved)
+                matches!(r.status, RequestStatus::Pending | RequestStatus::Approved)
                     && (admin
                         || (user.is_some() && r.requested_by.as_ref().map(|by| by.id) == user))
             })
             .map(|r| Cancellable {
                 id: r.id,
                 sent: r.status == RequestStatus::Approved,
+                is4k: r.is4k,
                 seasons: r.seasons.iter().map(|s| s.season_number).collect(),
             })
             .filter(|c| {
                 if self.seasons.is_empty() {
-                    !downloaded(info.status)
+                    !downloaded(self.status_of(c.is4k))
                 } else {
-                    !c.seasons.iter().any(|&n| downloaded(self.season_status(n)))
+                    !c.seasons
+                        .iter()
+                        .any(|&n| downloaded(self.season_status_of(n, c.is4k)))
                 }
             })
             .collect()
@@ -518,15 +568,16 @@ impl Details {
             .is_some_and(Request::automatic)
     }
 
-    /// Where what `request` asked for stands: the movie, or the request's seasons together
+    /// Where what `request` asked for stands: the movie, or the request's seasons together, in
+    /// HD or 4K as it asked
     pub fn request_status(&self, request: &Request) -> Status {
         if request.seasons.is_empty() {
-            return self.status();
+            return self.status_of(request.is4k);
         }
         let statuses: Vec<Status> = request
             .seasons
             .iter()
-            .map(|s| self.season_status(s.season_number))
+            .map(|s| self.season_status_of(s.season_number, request.is4k))
             .collect();
         if statuses.iter().all(|&s| s == Status::Available) {
             Status::Available
@@ -546,6 +597,11 @@ impl Details {
     /// Where season `n` stands. Like Seerr, a season in an open (not declined or completed)
     /// request counts as requested even if its own status hasn't caught up.
     pub fn season_status(&self, n: u32) -> Status {
+        self.season_status_of(n, false)
+    }
+
+    /// Where the HD or 4K copy of season `n` stands, as [`Self::season_status`]
+    fn season_status_of(&self, n: u32, is4k: bool) -> Status {
         let Some(info) = &self.media_info else {
             return Status::Missing;
         };
@@ -553,14 +609,18 @@ impl Details {
             .seasons
             .iter()
             .find(|s| s.season_number == n)
-            .map_or(Status::Missing, |s| s.status);
+            .map_or(
+                Status::Missing,
+                |s| if is4k { s.status4k } else { s.status },
+            );
         if own != Status::Missing {
             return own;
         }
         info.requests
             .iter()
             .filter(|r| {
-                !r.is4k && !matches!(r.status, RequestStatus::Declined | RequestStatus::Completed)
+                r.is4k == is4k
+                    && !matches!(r.status, RequestStatus::Declined | RequestStatus::Completed)
             })
             .find(|r| r.seasons.iter().any(|s| s.season_number == n))
             .map_or(Status::Missing, |r| match r.status {
@@ -607,6 +667,8 @@ pub struct Cancellable {
     pub id: u32,
     /// Approved, so it's been sent to Radarr or Sonarr and has to come out of there
     pub sent: bool,
+    /// For the 4K copy, which has its own Radarr or Sonarr
+    pub is4k: bool,
     /// Requested seasons, shows only
     pub seasons: Vec<u32>,
 }
@@ -741,9 +803,14 @@ impl Seerr {
             .await?)
     }
 
-    /// Quality profiles on the default non-4K server for `media`, which is where a request
+    /// Quality profiles on the default HD or 4K server for `media`, which is where a request
     /// without a server goes. `None` if there's no such server.
-    pub async fn profiles(&self, http: &reqwest::Client, media: Media) -> Result<Option<Profiles>> {
+    pub async fn profiles(
+        &self,
+        http: &reqwest::Client,
+        media: Media,
+        is4k: bool,
+    ) -> Result<Option<Profiles>> {
         let service = media.service();
         let servers: Vec<Server> = self
             .get(http, &format!("/service/{service}"))
@@ -752,7 +819,7 @@ impl Seerr {
             .error_for_status()?
             .json()
             .await?;
-        let Some(server) = servers.iter().find(|s| s.is_default && !s.is4k) else {
+        let Some(server) = servers.iter().find(|s| s.is_default && s.is4k == is4k) else {
             return Ok(None);
         };
         let details: ServerDetails = self
@@ -764,6 +831,8 @@ impl Seerr {
             .await?;
         Ok(Some(Profiles {
             server: server.id,
+            movies: matches!(media, Media::Movie(_)),
+            is4k,
             list: details.profiles,
         }))
     }
@@ -1016,6 +1085,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn moonfin_url() {
+        let info: MediaInfo = serde_json::from_str(
+            r##"{
+                "status": 5,
+                "mediaUrl": "https://stream.example.com/web/index.html#!/details?id=abc&context=home",
+                "jellyfinMediaId": "abc"
+            }"##,
+        )
+        .unwrap();
+        assert_eq!(
+            info.moonfin_url(false).as_deref(),
+            Some("https://stream.example.com/Moonfin/Web/item/abc")
+        );
+        assert_eq!(info.moonfin_url(true), None);
+        let missing: MediaInfo = serde_json::from_str(r#"{"status": 3}"#).unwrap();
+        assert_eq!(missing.moonfin_url(false), None);
+    }
+
+    #[test]
+    fn request_status_4k() {
+        let movie: Details = serde_json::from_str(
+            r#"{
+                "title": "Dune: Part Two",
+                "mediaInfo": {"status": 1, "status4k": 5, "requests": []}
+            }"#,
+        )
+        .unwrap();
+        let request = |is4k| Request {
+            is4k,
+            ..serde_json::from_str(r#"{"id": 1, "status": 5, "is4k": false}"#).unwrap()
+        };
+        assert_eq!(movie.request_status(&request(true)), Status::Available);
+        assert_eq!(movie.request_status(&request(false)), Status::Missing);
+    }
+
+    #[test]
     fn search_results() {
         let search: Search = serde_json::from_str(
             r#"{"results": [
@@ -1054,13 +1159,17 @@ mod tests {
                 "mediaInfo": {
                     "status": 4,
                     "seasons": [
-                        {"seasonNumber": 1, "status": 5},
-                        {"seasonNumber": 2, "status": 3},
+                        {"seasonNumber": 1, "status": 5, "status4k": 3},
+                        {"seasonNumber": 2, "status": 3, "status4k": 5},
                         {"seasonNumber": 3, "status": 2}
                     ],
                     "requests": [
                         {"id": 1, "status": 5, "is4k": false, "requestedBy": {"id": 5},
                          "seasons": [{"seasonNumber": 1}]},
+                        {"id": 5, "status": 2, "is4k": true, "requestedBy": {"id": 5},
+                         "seasons": [{"seasonNumber": 1}]},
+                        {"id": 6, "status": 2, "is4k": true, "requestedBy": {"id": 5},
+                         "seasons": [{"seasonNumber": 2}]},
                         {"id": 2, "status": 2, "is4k": false, "requestedBy": {"id": 5},
                          "seasons": [{"seasonNumber": 2}]},
                         {"id": 3, "status": 1, "is4k": false, "requestedBy": {"id": 8},
@@ -1073,8 +1182,9 @@ mod tests {
         )
         .unwrap();
         let ids = |c: Vec<Cancellable>| c.iter().map(|c| c.id).collect::<Vec<_>>();
-        // Not season 1, which is downloaded, or the declined one
-        assert_eq!(ids(show.cancellable(Some(5), false)), [2]);
+        // Not season 1, which is downloaded, or the declined one. 4K goes by the 4K copy: season
+        // 1 isn't downloaded in 4K, season 2 is.
+        assert_eq!(ids(show.cancellable(Some(5), false)), [5, 2]);
         assert_eq!(ids(show.cancellable(Some(8), false)), [3]);
         assert!(show.cancellable(None, false).is_empty());
         // Admins get anyone's, but still nothing downloaded
@@ -1083,13 +1193,21 @@ mod tests {
             all,
             [
                 Cancellable {
+                    id: 5,
+                    sent: true,
+                    is4k: true,
+                    seasons: vec![1],
+                },
+                Cancellable {
                     id: 2,
                     sent: true,
+                    is4k: false,
                     seasons: vec![2],
                 },
                 Cancellable {
                     id: 3,
                     sent: false,
+                    is4k: false,
                     seasons: vec![3],
                 },
             ]

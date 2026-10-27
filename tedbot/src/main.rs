@@ -39,6 +39,10 @@ pub struct Data {
     radarr: Option<arr::Arr>,
     /// Sonarr connection info, if configured
     sonarr: Option<arr::Arr>,
+    /// 4K Radarr connection info, if configured
+    radarr_4k: Option<arr::Arr>,
+    /// 4K Sonarr connection info, if configured
+    sonarr_4k: Option<arr::Arr>,
     /// Members with this role count as admins
     admin_role: Option<serenity::RoleId>,
 }
@@ -121,6 +125,7 @@ async fn run() -> Result<()> {
         jellyfin: jellyfin::Jellyfin {
             url: cfg.jellyfin.url,
             api_key: cfg.jellyfin.api_key,
+            moonfin: cfg.jellyfin.moonfin,
         },
         seerr: seerr::Seerr {
             url: cfg.seerr.url,
@@ -132,6 +137,14 @@ async fn run() -> Result<()> {
             api_key: c.api_key,
         }),
         sonarr: cfg.sonarr.map(|c| arr::Arr {
+            url: c.url,
+            api_key: c.api_key,
+        }),
+        radarr_4k: cfg.radarr_4k.map(|c| arr::Arr {
+            url: c.url,
+            api_key: c.api_key,
+        }),
+        sonarr_4k: cfg.sonarr_4k.map(|c| arr::Arr {
             url: c.url,
             api_key: c.api_key,
         }),
