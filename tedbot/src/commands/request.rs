@@ -8,6 +8,9 @@
 //! settings, so Seerr's permissions, quotas and auto-approval apply as if they'd used the site.
 //! Users Seerr would show advanced options also get a quality picker, and those who can bypass
 //! their quota get a second button that requests without counting against it.
+//!
+//! Users Seerr lets request 4K can also request a 4K version of what's already downloaded in
+//! HD, with a button switching the card between the two.
 
 use std::time::Duration;
 
@@ -24,13 +27,13 @@ use poise::{
 };
 use tracing::warn;
 
-use super::{escape, is_admin, remove_buttons};
+use super::{escape, is_admin, remove_buttons, requests::profiles};
 use crate::{
     Context, Data,
     arr::{Arr, Removed},
     seerr::{
-        self, Cancellable, Changed, Media, Profile, Quotas, Requested, Requester, SearchResult,
-        Status,
+        self, Cancellable, Changed, Details, Media, Profile, Profiles, Quotas, Request,
+        RequestStatus, Requested, Requester, SearchResult, Status,
     },
 };
 
@@ -71,7 +74,7 @@ pub async fn request(
 
     let id = ctx.id().to_string();
     let mut viewer = Viewer::load(data, user, is_admin(ctx).await).await;
-    let mut card = Card::build(data, &results, 0, &viewer).await?;
+    let mut card = Card::build(data, &results, 0, &viewer, false).await?;
     let reply = CreateReply::default()
         .components(card.components(&id))
         .embed(std::mem::take(&mut card.embed));
@@ -90,17 +93,17 @@ pub async fn request(
             Some("-prev") => (card.index + results.len() - 1, None),
             Some("-request") => (card.index, Some(Action::Request { bypass: false })),
             Some("-request-bypass") => (card.index, Some(Action::Request { bypass: true })),
-            Some(choice @ ("-seasons" | "-quality")) => {
+            Some(choice @ ("-seasons" | "-quality" | "-switch")) => {
                 // Only the menus and buttons change, so answer with them straight away
                 let values = match &press.data.kind {
                     ComponentInteractionDataKind::StringSelect { values } => values.as_slice(),
                     _ => &[],
                 };
                 let numbers = values.iter().filter_map(|v| v.parse().ok());
-                if choice == "-seasons" {
-                    card.picked = numbers.collect();
-                } else {
-                    card.profile = numbers.into_iter().next();
+                match choice {
+                    "-seasons" => card.picked = numbers.collect(),
+                    "-quality" => card.profile = numbers.into_iter().next(),
+                    _ => card.switch(),
                 }
                 let update =
                     CreateInteractionResponseMessage::new().components(card.components(&id));
@@ -137,7 +140,9 @@ pub async fn request(
             viewer.quotas = Viewer::quotas(data, user).await;
         }
         let mut notice = done.and_then(|(notice, _)| notice);
-        match Card::build(data, &results, index, &viewer).await {
+        // The same result stays on the version it was on
+        let is4k = index == card.index && card.is4k;
+        match Card::build(data, &results, index, &viewer, is4k).await {
             Ok(next) => {
                 card = next;
                 EditInteractionResponse::new()
@@ -225,48 +230,28 @@ struct Viewer {
     admin: bool,
     /// The user's quotas
     quotas: Option<Quotas>,
-    /// Movie quality profiles, if the user may pick one
-    movie_profiles: Vec<Profile>,
-    /// Show quality profiles, if the user may pick one
-    tv_profiles: Vec<Profile>,
+    /// The default HD and 4K servers' quality profiles. A server missing here can't be
+    /// requested from.
+    profiles: Vec<Profiles>,
 }
 
 impl Viewer {
-    /// Fetches the user's quotas and, if they may pick one, the quality profiles
+    /// Fetches the user's quotas and the servers' quality profiles
     async fn load(data: &Data, user: Option<Requester>, admin: bool) -> Self {
         let Some(user) = user else {
             return Self {
                 user,
                 admin,
                 quotas: None,
-                movie_profiles: Vec::new(),
-                tv_profiles: Vec::new(),
+                profiles: Vec::new(),
             };
         };
-        let profiles = |media| async move {
-            if !user.can_pick_profile() {
-                return Vec::new();
-            }
-            data.seerr
-                .profiles(&data.http, media, false)
-                .await
-                .inspect_err(|e| warn!("Fetching quality profiles: {e:#}"))
-                .ok()
-                .flatten()
-                .map(|p| p.list)
-                .unwrap_or_default()
-        };
-        let (quotas, movie_profiles, tv_profiles) = tokio::join!(
-            Self::quotas(data, user),
-            profiles(Media::Movie(0)),
-            profiles(Media::Tv(0)),
-        );
+        let (quotas, profiles) = tokio::join!(Self::quotas(data, user), profiles(data));
         Self {
             user: Some(user),
             admin,
             quotas,
-            movie_profiles,
-            tv_profiles,
+            profiles,
         }
     }
 
@@ -277,6 +262,35 @@ impl Viewer {
             .await
             .inspect_err(|e| warn!("Fetching quotas: {e:#}"))
             .ok()
+    }
+
+    /// The default HD or 4K server's profiles for `media`, if there's such a server
+    fn server(&self, media: Media, is4k: bool) -> Option<&Profiles> {
+        let movies = matches!(media, Media::Movie(_));
+        self.profiles
+            .iter()
+            .find(|p| p.movies == movies && p.is4k == is4k)
+    }
+}
+
+/// What the card can do with one version of its movie or show, HD or 4K
+#[derive(Default)]
+struct Version {
+    /// Whether it can be requested
+    requestable: bool,
+    /// Seasons that can be requested, shows only
+    open: Vec<u32>,
+    /// Quality profiles to pick from, empty if the invoker may not
+    profiles: Vec<Profile>,
+    /// Requests the invoker may cancel. Ones already sent to Radarr or Sonarr are left out if
+    /// the bot can't reach it.
+    cancellable: Vec<Cancellable>,
+}
+
+impl Version {
+    /// Whether there's anything to do with it
+    const fn active(&self) -> bool {
+        self.requestable || !self.cancellable.is_empty()
     }
 }
 
@@ -291,36 +305,39 @@ struct Card {
     index: usize,
     /// Number of results, for ◀ ▶
     count: usize,
-    /// Whether the movie, or any season of the show, can be requested
-    requestable: bool,
     /// Whether the invoker is linked to a Seerr user, and so can request
     linked: bool,
-    /// Seasons that can be requested, shows only
-    open: Vec<u32>,
-    /// Seasons picked in the menu. Empty means all of [`Self::open`].
+    /// The HD and 4K versions
+    versions: [Version; 2],
+    /// Which version the menus and buttons are for
+    is4k: bool,
+    /// Seasons picked in the menu. Empty means all of the version's open seasons.
     picked: Vec<u32>,
-    /// Quality profiles to pick from, empty if the invoker may not
-    profiles: Vec<Profile>,
     /// Profile picked in the menu, `None` for Seerr's default
     profile: Option<u32>,
     /// Whether the invoker has a quota for this kind of media and may bypass it
     can_bypass: bool,
-    /// Requests the invoker may cancel. Ones already sent to Radarr or Sonarr are left out if
-    /// the bot can't reach it.
-    cancellable: Vec<Cancellable>,
     /// TVDB id, shows only, once Seerr knows of it
     tvdb_id: Option<u32>,
-    /// Jellyfin page, once it's available
+    /// Jellyfin page, the HD version's if there's one, once it's available
     watch: Option<String>,
 }
 
 impl Card {
-    /// Fetches result `index` (wrapping around) from Seerr and renders it
-    async fn build(data: &Data, results: &[Media], index: usize, viewer: &Viewer) -> Result<Self> {
+    /// Fetches result `index` (wrapping around) from Seerr and renders it, for the 4K version
+    /// if `is4k` and there's anything to do with it
+    async fn build(
+        data: &Data,
+        results: &[Media],
+        index: usize,
+        viewer: &Viewer,
+        is4k: bool,
+    ) -> Result<Self> {
         let index = index % results.len();
         let media = results[index];
         let details = data.seerr.details(&data.http, media).await?;
         let title = seerr::with_year(&details.title, details.release_date.as_deref());
+        let tvdb_id = details.media_info.as_ref().and_then(|m| m.tvdb_id);
 
         let mut embed = CreateEmbed::new().title(&title);
         if let Some(url) = data.seerr.page(media) {
@@ -333,27 +350,115 @@ impl Card {
             embed = embed.thumbnail(format!("{POSTER_URL}{path}"));
         }
 
+        // 4K is only an upgrade: it can be requested once the HD version is downloaded
+        let can_4k = viewer.user.is_some_and(|u| u.can_request_4k(media))
+            && viewer.server(media, true).is_some();
         let blocked = details.status() == Status::Blocklisted;
-        let (kind, requestable, open) = match media {
+        let numbers: Vec<u32> = details.season_numbers().collect();
+        // Each season's status in HD and 4K, or the movie's as season `None`
+        let keys: Vec<Option<u32>> = match media {
+            Media::Movie(_) => vec![None],
+            Media::Tv(_) => numbers.iter().copied().map(Some).collect(),
+        };
+        let status_of = |n: Option<u32>, is4k| {
+            n.map_or_else(
+                || details.status_of(is4k),
+                |n| details.season_status_of(n, is4k),
+            )
+        };
+        let processing = |is4k| {
+            keys.iter()
+                .any(|&n| status_of(n, is4k) == Status::Processing)
+        };
+        let started: [Started; 2] = tokio::join!(
+            started_if(data, media, tvdb_id, false, processing(false)),
+            started_if(data, media, tvdb_id, true, processing(true)),
+        )
+        .into();
+        let label = |n: Option<u32>, is4k: bool| {
+            status(
+                status_of(n, is4k),
+                details.auto_approved(n, is4k),
+                started[usize::from(is4k)].of(n),
+            )
+        };
+
+        let (kind, open) = match media {
             Media::Movie(_) => {
-                let label = status(details.status(), details.auto_approved(None));
-                embed = embed.field("Status", label, false);
-                ("Movie", details.status() == Status::Missing, Vec::new())
+                let (hd, uhd) = (status_of(None, false), status_of(None, true));
+                let (hd_label, uhd_label) = (label(None, false), label(None, true));
+                let text = match (hd, uhd) {
+                    (_, Status::Missing) => hd_label.to_owned(),
+                    (Status::Missing, _) => format!("{uhd_label} in 4K"),
+                    _ if hd_label == uhd_label => format!("{hd_label} in HD and 4K"),
+                    _ => format!("{hd_label}\n{uhd_label} in 4K"),
+                };
+                embed = embed.field("Status", text, false);
+                let open_4k = can_4k && hd == Status::Available && uhd == Status::Missing;
+                (
+                    "Movie",
+                    [hd == Status::Missing, open_4k].map(|open| (open, Vec::new())),
+                )
             }
             Media::Tv(_) => {
-                let seasons: Vec<(u32, Status, bool)> = details
-                    .season_numbers()
-                    .map(|n| (n, details.season_status(n), details.auto_approved(Some(n))))
+                let lines = |is4k| -> Vec<(u32, &'static str, Status)> {
+                    numbers
+                        .iter()
+                        .map(|&n| (n, label(Some(n), is4k), status_of(Some(n), is4k)))
+                        .collect()
+                };
+                embed = embed.field("Seasons", season_lines(&lines(false)), false);
+                let known_4k: Vec<_> = lines(true)
+                    .into_iter()
+                    .filter(|&(.., s)| s != Status::Missing)
                     .collect();
-                embed = embed.field("Seasons", season_lines(&seasons), false);
-                let open: Vec<u32> = seasons
-                    .iter()
-                    .filter(|&&(_, s, _)| s == Status::Missing)
-                    .map(|&(n, ..)| n)
-                    .collect();
-                ("TV show", !blocked && !open.is_empty(), open)
+                if !known_4k.is_empty() {
+                    embed = embed.field("4K seasons", season_lines(&known_4k), false);
+                }
+                let open = |is4k| -> Vec<u32> {
+                    numbers
+                        .iter()
+                        .copied()
+                        .filter(|&n| {
+                            status_of(Some(n), is4k) == Status::Missing
+                                && (!is4k
+                                    || can_4k && status_of(Some(n), false) == Status::Available)
+                        })
+                        .collect()
+                };
+                let (open_hd, open_4k) = (open(false), open(true));
+                (
+                    "TV show",
+                    [
+                        (!blocked && !open_hd.is_empty(), open_hd),
+                        (!blocked && !open_4k.is_empty(), open_4k),
+                    ],
+                )
             }
         };
+
+        let can_pick = viewer.user.is_some_and(Requester::can_pick_profile);
+        let cancellable = details.cancellable(viewer.user.map(|u| u.id), viewer.admin);
+        let versions = open.map(|(requestable, open)| Version {
+            requestable,
+            open,
+            ..Version::default()
+        });
+        let [hd, uhd] = versions;
+        let versions = [(hd, false), (uhd, true)].map(|(version, is4k)| Version {
+            profiles: viewer
+                .server(media, is4k)
+                .filter(|_| can_pick)
+                .map(|p| p.list.clone())
+                .unwrap_or_default(),
+            cancellable: cancellable
+                .iter()
+                .filter(|c| c.is4k == is4k && (can_unsend(data, media, is4k) || !c.sent))
+                .cloned()
+                .collect(),
+            ..version
+        });
+        let requestable = versions.iter().any(|v| v.requestable);
 
         // One line each: "TV show quota: 4 of 6 seasons left (7 days)", "1 of 20", and how to link
         let linked = viewer.user.is_some();
@@ -385,35 +490,52 @@ impl Card {
             embed = embed.footer(CreateEmbedFooter::new(footer.join("\n")));
         }
 
-        let profiles = match media {
-            Media::Movie(_) => &viewer.movie_profiles,
-            Media::Tv(_) => &viewer.tv_profiles,
+        let is4k = if versions[usize::from(is4k)].active() {
+            is4k
+        } else {
+            !versions[0].active() && versions[1].active()
         };
-        let can_bypass = limited && viewer.user.is_some_and(Requester::can_bypass_quota);
-        // This card requests and shows the HD copy, so 4K requests are left to `/requests`
-        let cancellable = details
-            .cancellable(viewer.user.map(|u| u.id), viewer.admin)
-            .into_iter()
-            .filter(|c| !c.is4k && (can_unsend(data, media, false) || !c.sent))
-            .collect();
-
+        let watch = details
+            .media_info
+            .as_ref()
+            .and_then(|m| m.jellyfin_url(false).or_else(|| m.jellyfin_url(true)))
+            .map(str::to_owned);
         Ok(Self {
             embed,
             media,
             title,
             index,
             count: results.len(),
-            requestable,
             linked,
-            open,
+            versions,
+            is4k,
             picked: Vec::new(),
-            profiles: profiles.clone(),
             profile: None,
-            can_bypass,
-            cancellable,
-            tvdb_id: details.media_info.as_ref().and_then(|m| m.tvdb_id),
-            watch: details.media_info.and_then(|m| m.media_url),
+            can_bypass: limited && viewer.user.is_some_and(Requester::can_bypass_quota),
+            tvdb_id,
+            watch,
         })
+    }
+
+    /// The version the menus and buttons are for
+    const fn version(&self) -> &Version {
+        &self.versions[self.is4k as usize]
+    }
+
+    /// The seasons a request would ask for: the picked ones, or all open ones
+    fn seasons(&self) -> &[u32] {
+        if self.picked.is_empty() {
+            &self.version().open
+        } else {
+            &self.picked
+        }
+    }
+
+    /// Switches the menus and buttons to the other version, clearing what was picked
+    fn switch(&mut self) {
+        self.is4k = !self.is4k;
+        self.picked.clear();
+        self.profile = None;
     }
 
     /// Requests the movie, or the picked seasons, as Seerr user `user` with the picked quality,
@@ -421,13 +543,10 @@ impl Card {
     /// anything (a request made shows on the card), and whether the request was made.
     async fn request(&self, data: &Data, user: u32, bypass: bool) -> (Option<String>, bool) {
         let options = seerr::Options {
-            seasons: if self.picked.is_empty() {
-                &self.open
-            } else {
-                &self.picked
-            },
+            seasons: self.seasons(),
             profile: self.profile,
             ignore_quota: self.can_bypass && bypass,
+            is4k: self.is4k,
         };
         match data
             .seerr
@@ -443,28 +562,29 @@ impl Card {
         }
     }
 
-    /// Cancels [`Self::cancellable`], returning what to tell the invoker and whether anything
-    /// changed
+    /// Cancels the version's cancellable requests, returning what to tell the invoker and
+    /// whether anything changed
     async fn cancel(&self, data: &Data) -> (String, bool) {
         cancel(
             data,
             self.media,
             self.tvdb_id,
             &self.title,
-            &self.cancellable,
+            &self.version().cancellable,
         )
         .await
     }
 
     /// The season menu for shows with more than one open season and the quality menu, then
-    /// ◀ Request, Request bypassing the quota, Cancel request, ▶ and a link to Jellyfin once it's
-    /// there
+    /// ◀ Request, Request bypassing the quota, Cancel request, Switch to 4K or HD, ▶ and a link
+    /// to Jellyfin once it's there
     fn components(&self, id: &str) -> Vec<CreateActionRow> {
         let button = |suffix: &str| CreateButton::new(format!("{id}-{suffix}"));
+        let version = self.version();
         let mut rows = Vec::new();
 
-        if self.requestable && self.linked && self.open.len() > 1 {
-            let options = self
+        if version.requestable && self.linked && version.open.len() > 1 {
+            let options = version
                 .open
                 .iter()
                 .take(MAX_OPTIONS)
@@ -486,8 +606,8 @@ impl Card {
             ));
         }
 
-        if self.requestable && self.linked && !self.profiles.is_empty() {
-            let options = self
+        if version.requestable && self.linked && !version.profiles.is_empty() {
+            let options = version
                 .profiles
                 .iter()
                 .take(MAX_OPTIONS)
@@ -515,7 +635,7 @@ impl Card {
                     .style(ButtonStyle::Secondary),
             );
         }
-        if self.requestable {
+        if version.requestable {
             buttons.push(
                 button("request")
                     .label(self.request_label())
@@ -523,19 +643,28 @@ impl Card {
                     .disabled(!self.linked),
             );
         }
-        if self.requestable && self.can_bypass {
+        if version.requestable && self.can_bypass {
             buttons.push(
                 button("request-bypass")
                     .label("Request and bypass quota")
                     .style(ButtonStyle::Secondary),
             );
         }
-        if !self.cancellable.is_empty() {
-            buttons.push(
-                button("cancel")
-                    .label("Cancel request")
-                    .style(ButtonStyle::Danger),
-            );
+        if !version.cancellable.is_empty() {
+            let label = if self.is4k {
+                "Cancel 4K request"
+            } else {
+                "Cancel request"
+            };
+            buttons.push(button("cancel").label(label).style(ButtonStyle::Danger));
+        }
+        if self.versions.iter().all(Version::active) {
+            let label = if self.is4k {
+                "Switch to HD"
+            } else {
+                "Switch to 4K"
+            };
+            buttons.push(button("switch").label(label).style(ButtonStyle::Secondary));
         }
         if self.count > 1 {
             buttons.push(
@@ -556,21 +685,95 @@ impl Card {
         rows
     }
 
-    /// "Request", "Request season 2", "Request 3 seasons" or "Request all seasons"
+    /// "Request", "Request season 2", "Request 3 seasons" or "Request all seasons", with " in 4K"
+    /// for the 4K version
     fn request_label(&self) -> String {
-        if let Media::Movie(_) = self.media {
-            return "Request".into();
-        }
-        let seasons = if self.picked.is_empty() {
-            &self.open
-        } else {
-            &self.picked
-        };
-        match seasons.as_slice() {
-            [n] => format!("Request season {n}"),
+        let label = match (self.media, self.seasons()) {
+            (Media::Movie(_), _) => "Request".into(),
+            (_, [n]) => format!("Request season {n}"),
             _ if self.picked.is_empty() => "Request all seasons".into(),
-            many => format!("Request {} seasons", many.len()),
+            (_, many) => format!("Request {} seasons", many.len()),
+        };
+        if self.is4k {
+            format!("{label} in 4K")
+        } else {
+            label
         }
+    }
+}
+
+/// Which downloads of a movie or show have started in Radarr or Sonarr
+#[derive(Debug, Default)]
+pub(super) struct Started {
+    movie: bool,
+    seasons: Vec<u32>,
+}
+
+impl Started {
+    /// Whether season `n`'s download has, or with `None` the movie's
+    fn of(&self, n: Option<u32>) -> bool {
+        n.map_or(self.movie, |n| self.seasons.contains(&n))
+    }
+}
+
+/// Which downloads of `media`'s HD or 4K version have started, if `check`. Best effort: without
+/// Radarr or Sonarr, or if it can't be reached, none have.
+async fn started_if(
+    data: &Data,
+    media: Media,
+    tvdb_id: Option<u32>,
+    is4k: bool,
+    check: bool,
+) -> Started {
+    let Some(arr) = arr(data, media, is4k).filter(|_| check) else {
+        return Started::default();
+    };
+    let started = match (media, tvdb_id) {
+        (Media::Movie(tmdb_id), _) => {
+            arr.movie_started(&data.http, tmdb_id)
+                .await
+                .map(|movie| Started {
+                    movie,
+                    seasons: Vec::new(),
+                })
+        }
+        (Media::Tv(_), Some(tvdb_id)) => {
+            arr.seasons_started(&data.http, tvdb_id)
+                .await
+                .map(|seasons| Started {
+                    movie: false,
+                    seasons,
+                })
+        }
+        (Media::Tv(_), None) => return Started::default(),
+    };
+    started
+        .inspect_err(|e| {
+            warn!(
+                "Checking {}'s downloads of {media}: {e:#}",
+                arr_name(media, is4k)
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// Whether a download of what `request` asked for has started, if it's been sent to Radarr or
+/// Sonarr and isn't downloaded yet. `details` is the media's.
+pub(super) async fn request_started(data: &Data, request: &Request, details: &Details) -> bool {
+    let Some(media) = request.media() else {
+        return false;
+    };
+    let check = request.status == RequestStatus::Approved
+        && details.request_status(request) == Status::Processing;
+    let tvdb_id = details.media_info.as_ref().and_then(|m| m.tvdb_id);
+    let started = started_if(data, media, tvdb_id, request.is4k, check).await;
+    if request.seasons.is_empty() {
+        started.movie
+    } else {
+        request
+            .season_numbers()
+            .iter()
+            .any(|n| started.seasons.contains(n))
     }
 }
 
@@ -692,48 +895,52 @@ pub(super) const fn can_unsend(data: &Data, media: Media, is4k: bool) -> bool {
     arr(data, media, is4k).is_some()
 }
 
-/// How a movie or season's status reads on the card
-pub(super) const fn status(s: Status, auto_approved: bool) -> &'static str {
+/// How a movie or season's status reads on the card. `started` is whether an approved one's
+/// download has.
+pub(super) const fn status(s: Status, auto_approved: bool, started: bool) -> &'static str {
     match s {
         Status::Missing => "Not requested",
         Status::Pending => "Requested, waiting for approval",
-        Status::Processing if auto_approved => "Automatically approved, not downloaded",
-        Status::Processing => "Approved, not downloaded",
+        Status::Processing => match (auto_approved, started) {
+            (true, true) => "Automatically approved, download started",
+            (true, false) => "Automatically approved, download queued",
+            (false, true) => "Approved, download started",
+            (false, false) => "Approved, download queued",
+        },
         Status::PartiallyAvailable => "Partly downloaded",
         Status::Available => "Downloaded",
         Status::Blocklisted => "Blocklisted",
     }
 }
 
-/// One line per status, available first: "Downloaded: 1–3, 5". Each season is its number,
-/// status, and whether it was approved automatically.
-fn season_lines(seasons: &[(u32, Status, bool)]) -> String {
+/// One line per label, available first: "Downloaded: 1–3, 5". Each season is its number, how
+/// its status reads, and the status.
+fn season_lines(seasons: &[(u32, &str, Status)]) -> String {
     if seasons.is_empty() {
         return "None yet".into();
     }
-    [
-        Status::Available,
-        Status::PartiallyAvailable,
-        Status::Processing,
-        Status::Pending,
-        Status::Missing,
-        Status::Blocklisted,
-    ]
-    .into_iter()
-    .flat_map(|s| [(s, true), (s, false)])
-    .map(|(s, auto)| (status(s, auto), s, auto))
-    // Only approved seasons differ by `auto`, so the rest would show twice
-    .filter(|&(_, s, auto)| s == Status::Processing || !auto)
-    .filter_map(|(label, s, auto)| {
-        let numbers: Vec<u32> = seasons
-            .iter()
-            .filter(|&&(_, status, a)| status == s && (s != Status::Processing || a == auto))
-            .map(|&(n, ..)| n)
-            .collect();
-        (!numbers.is_empty()).then(|| format!("{label}: {}", ranges(&numbers)))
-    })
-    .collect::<Vec<_>>()
-    .join("\n")
+    let rank = |s: Status| match s {
+        Status::Available => 0,
+        Status::PartiallyAvailable => 1,
+        Status::Processing => 2,
+        Status::Pending => 3,
+        Status::Missing => 4,
+        Status::Blocklisted => 5,
+    };
+    let mut lines: Vec<(u8, &str, Vec<u32>)> = Vec::new();
+    for &(n, label, s) in seasons {
+        match lines.iter_mut().find(|(_, l, _)| *l == label) {
+            Some((.., numbers)) => numbers.push(n),
+            None => lines.push((rank(s), label, vec![n])),
+        }
+    }
+    // Stable, so labels of the same status keep the order they first came in
+    lines.sort_by_key(|&(rank, ..)| rank);
+    lines
+        .iter()
+        .map(|(_, label, numbers)| format!("{label}: {}", ranges(numbers)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Ascending numbers with runs collapsed: `[1, 2, 3, 5]` -> "1–3, 5"
@@ -782,18 +989,21 @@ mod tests {
 
     #[test]
     fn lines() {
+        let season = |n, s, auto, started| (n, status(s, auto, started), s);
         let seasons = [
-            (1, Status::Available, false),
-            (2, Status::Available, false),
-            (3, Status::Processing, true),
-            (4, Status::Processing, false),
-            (5, Status::Pending, false),
-            (6, Status::Missing, false),
+            season(6, Status::Missing, false, false),
+            season(1, Status::Available, false, false),
+            season(2, Status::Available, false, false),
+            season(3, Status::Processing, true, false),
+            season(4, Status::Processing, false, true),
+            season(5, Status::Pending, false, false),
+            season(7, Status::Processing, true, false),
         ];
         assert_eq!(
             season_lines(&seasons),
-            "Downloaded: 1\u{2013}2\nAutomatically approved, not downloaded: 3\n\
-             Approved, not downloaded: 4\nRequested, waiting for approval: 5\nNot requested: 6"
+            "Downloaded: 1\u{2013}2\nAutomatically approved, download queued: 3, 7\n\
+             Approved, download started: 4\nRequested, waiting for approval: 5\n\
+             Not requested: 6"
         );
     }
 

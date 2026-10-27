@@ -43,6 +43,12 @@ const MANAGE_REQUESTS: u32 = 16;
 const ADMIN: u32 = 2;
 /// Seerr's `REQUEST_ADVANCED` permission, for picking a quality profile
 const REQUEST_ADVANCED: u32 = 8192;
+/// Seerr's `REQUEST_4K` permission, for 4K movies and shows
+const REQUEST_4K: u32 = 1024;
+/// Seerr's `REQUEST_4K_MOVIE` permission
+const REQUEST_4K_MOVIE: u32 = 2048;
+/// Seerr's `REQUEST_4K_TV` permission
+const REQUEST_4K_TV: u32 = 4096;
 
 /// The Seerr user a request is made as
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +73,14 @@ impl Requester {
     /// itself, so it's up to the bot.
     pub const fn can_pick_profile(self) -> bool {
         self.has_any(MANAGE_REQUESTS | REQUEST_ADVANCED)
+    }
+
+    /// Whether Seerr lets them request `media` in 4K
+    pub const fn can_request_4k(self, media: Media) -> bool {
+        self.has_any(match media {
+            Media::Movie(_) => REQUEST_4K | REQUEST_4K_MOVIE,
+            Media::Tv(_) => REQUEST_4K | REQUEST_4K_TV,
+        })
     }
 }
 
@@ -507,7 +521,7 @@ impl Details {
     }
 
     /// Where the HD or 4K copy of the movie, or the whole show, stands
-    fn status_of(&self, is4k: bool) -> Status {
+    pub fn status_of(&self, is4k: bool) -> Status {
         self.media_info.as_ref().map_or(
             Status::Missing,
             |m| {
@@ -559,11 +573,11 @@ impl Details {
 
     /// Whether the approved request covering season `n`, or the movie with `None`, was approved
     /// automatically rather than by someone else. `false` if no approved request covers it.
-    pub fn auto_approved(&self, n: Option<u32>) -> bool {
+    pub fn auto_approved(&self, n: Option<u32>, is4k: bool) -> bool {
         self.media_info
             .iter()
             .flat_map(|m| &m.requests)
-            .filter(|r| !r.is4k && r.status == RequestStatus::Approved)
+            .filter(|r| r.is4k == is4k && r.status == RequestStatus::Approved)
             .find(|r| n.is_none_or(|n| r.seasons.iter().any(|s| s.season_number == n)))
             .is_some_and(Request::automatic)
     }
@@ -601,7 +615,7 @@ impl Details {
     }
 
     /// Where the HD or 4K copy of season `n` stands, as [`Self::season_status`]
-    fn season_status_of(&self, n: u32, is4k: bool) -> Status {
+    pub fn season_status_of(&self, n: u32, is4k: bool) -> Status {
         let Some(info) = &self.media_info else {
             return Status::Missing;
         };
@@ -642,6 +656,8 @@ struct NewRequest<'a> {
     profile_id: Option<u32>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     ignore_quota: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    is4k: bool,
 }
 
 /// What to request beyond the movie or show itself
@@ -649,10 +665,12 @@ struct NewRequest<'a> {
 pub struct Options<'a> {
     /// Seasons, shows only
     pub seasons: &'a [u32],
-    /// Quality profile on the default server, `None` for Seerr's choice
+    /// Quality profile on the default (HD or 4K) server, `None` for Seerr's choice
     pub profile: Option<u32>,
     /// Don't count it against the requester's quota
     pub ignore_quota: bool,
+    /// Request the 4K copy, which goes to Seerr's default 4K server
+    pub is4k: bool,
 }
 
 /// Body of a Seerr error
@@ -883,6 +901,7 @@ impl Seerr {
             seasons,
             profile_id: options.profile,
             ignore_quota: options.ignore_quota,
+            is4k: options.is4k,
         };
         let response = http
             .post(self.api("/request"))
@@ -1281,9 +1300,9 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert!(show.auto_approved(Some(1)));
-        assert!(!show.auto_approved(Some(2)));
-        assert!(!show.auto_approved(Some(3)));
+        assert!(show.auto_approved(Some(1), false));
+        assert!(!show.auto_approved(Some(2), false));
+        assert!(!show.auto_approved(Some(3), false));
     }
 
     #[test]
@@ -1298,6 +1317,10 @@ mod tests {
         assert!(user(REQUEST_ADVANCED).can_pick_profile());
         assert!(!user(REQUEST_ADVANCED).can_bypass_quota());
         assert!(user(ADMIN).can_bypass_quota());
+        assert!(user(REQUEST_4K_TV).can_request_4k(Media::Tv(1)));
+        assert!(!user(REQUEST_4K_TV).can_request_4k(Media::Movie(1)));
+        assert!(user(REQUEST_4K).can_request_4k(Media::Movie(1)));
+        assert!(!user(69_222_432).can_request_4k(Media::Movie(1)));
     }
 
     #[test]

@@ -33,7 +33,7 @@ use tracing::warn;
 
 use super::{
     escape, has_admin_role, is_admin, remove_buttons,
-    request::{can_unsend, cancel, ranges, status, truncate},
+    request::{can_unsend, cancel, ranges, request_started, status, truncate},
 };
 use crate::{
     Context, Data,
@@ -522,17 +522,35 @@ impl Screen {
             }
         }));
         let (details, names) = tokio::join!(details, names);
+        let started = join_all(
+            listed
+                .requests
+                .iter()
+                .zip(&details)
+                .map(|(r, d)| async move {
+                    match d {
+                        Some(d) => request_started(data, r, d).await,
+                        None => false,
+                    }
+                }),
+        )
+        .await;
 
         let mut rows = Vec::new();
         let mut options = Vec::new();
-        for (i, ((request, details), name)) in
-            listed.requests.iter().zip(&details).zip(names).enumerate()
+        for (i, (((request, details), name), started)) in listed
+            .requests
+            .iter()
+            .zip(&details)
+            .zip(names)
+            .zip(started)
+            .enumerate()
         {
             let title = details.as_ref().map_or_else(
                 || "Unknown title".to_owned(),
                 |d| seerr::with_year(&d.title, d.release_date.as_deref()),
             );
-            let label = label(request, details.as_ref());
+            let label = label(request, details.as_ref(), started);
             let mut line = format!("**{}**{}", escape(&title), seasons(request, " \u{b7} "));
             let mut about = vec![label.clone()];
             about.extend(name);
@@ -641,7 +659,8 @@ impl Screen {
         if let Some(path) = &details.poster_path {
             embed = embed.thumbnail(format!("{POSTER_URL}{path}"));
         }
-        embed = embed.field("Status", label(&request, Some(&details)), false);
+        let started = request_started(data, &request, &details).await;
+        embed = embed.field("Status", label(&request, Some(&details), started), false);
         if !request.seasons.is_empty() {
             embed = embed.field("Seasons", ranges(&request.season_numbers()), true);
         }
@@ -1015,8 +1034,8 @@ impl Card {
 }
 
 /// The default HD and 4K servers' movie and show quality profiles, for admins to change
-/// requests between
-async fn profiles(data: &Data) -> Vec<Profiles> {
+/// requests between and for requesting
+pub(super) async fn profiles(data: &Data) -> Vec<Profiles> {
     let profiles = |media, is4k| async move {
         data.seerr
             .profiles(&data.http, media, is4k)
@@ -1288,19 +1307,20 @@ fn batch(requests: Vec<Request>, id: u32) -> Vec<Request> {
 }
 
 /// How a request's status reads: its own while it's pending, declined or failed, else where
-/// what it asked for stands. `details` is the media's, if it could be fetched.
-fn label(request: &Request, details: Option<&Details>) -> String {
+/// what it asked for stands. `details` is the media's, if it could be fetched, and `started`
+/// whether its download has.
+fn label(request: &Request, details: Option<&Details>, started: bool) -> String {
     let label = match request.status {
-        RequestStatus::Pending => status(Status::Pending, false),
+        RequestStatus::Pending => status(Status::Pending, false, false),
         RequestStatus::Declined => "Declined",
         RequestStatus::Failed => "Failed, see Seerr",
         RequestStatus::Approved | RequestStatus::Completed => {
             match details.map_or(Status::Processing, |d| d.request_status(request)) {
                 s @ (Status::Available | Status::PartiallyAvailable | Status::Blocklisted) => {
-                    status(s, false)
+                    status(s, false, false)
                 }
                 Status::Missing if request.status == RequestStatus::Completed => "Deleted since",
-                _ => status(Status::Processing, request.automatic()),
+                _ => status(Status::Processing, request.automatic(), started),
             }
         }
     };
