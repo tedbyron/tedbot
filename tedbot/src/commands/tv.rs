@@ -21,7 +21,7 @@ use poise::{
 };
 use tracing::warn;
 
-use super::escape;
+use super::{escape, remove_buttons};
 use crate::{
     Context, Data,
     ersatztv::{Guide, Program},
@@ -199,20 +199,7 @@ async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<String>) -> Result
     }
 
     // The newest token is the only one guaranteed not to have expired
-    match last {
-        Some(token) => {
-            EditInteractionResponse::new()
-                .components(vec![])
-                .execute(ctx, &token)
-                .await?;
-        }
-        None => {
-            handle
-                .edit(ctx, CreateReply::default().components(vec![]))
-                .await?;
-        }
-    }
-    Ok(())
+    remove_buttons(ctx, last).await
 }
 
 /// Reply when [`Target::Find`] matches nothing

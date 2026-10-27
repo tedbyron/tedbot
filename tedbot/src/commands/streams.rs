@@ -18,7 +18,7 @@ use poise::{
 };
 use tracing::warn;
 
-use super::{escape, is_admin};
+use super::{escape, is_admin, remove_buttons};
 use crate::{
     Context,
     jellyfin::{self, Session},
@@ -80,20 +80,7 @@ pub async fn streams(ctx: Context<'_>) -> Result<()> {
     }
 
     // The newest token is the only one guaranteed not to have expired
-    match last {
-        Some(token) => {
-            EditInteractionResponse::new()
-                .components(vec![])
-                .execute(ctx, &token)
-                .await?;
-        }
-        None => {
-            handle
-                .edit(ctx, CreateReply::default().components(vec![]))
-                .await?;
-        }
-    }
-    Ok(())
+    remove_buttons(ctx, last).await
 }
 
 /// The stream count, upload in use, and who's watching. For admins, also LAN bandwidth and one

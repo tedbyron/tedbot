@@ -32,7 +32,7 @@ use poise::{
 use tracing::warn;
 
 use super::{
-    escape, has_admin_role, is_admin,
+    escape, has_admin_role, is_admin, remove_buttons,
     request::{can_unsend, cancel, ranges, status, truncate},
 };
 use crate::{
@@ -232,20 +232,7 @@ pub async fn requests(
     }
 
     // The newest token is the only one guaranteed not to have expired
-    match last {
-        Some(token) => {
-            EditInteractionResponse::new()
-                .components(vec![])
-                .execute(ctx, &token)
-                .await?;
-        }
-        None => {
-            handle
-                .edit(ctx, CreateReply::default().components(vec![]))
-                .await?;
-        }
-    }
-    Ok(())
+    remove_buttons(ctx, last).await
 }
 
 /// What a press asks for

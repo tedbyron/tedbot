@@ -8,7 +8,8 @@ pub mod requests;
 pub mod streams;
 pub mod tv;
 
-use poise::serenity_prelude::Member;
+use anyhow::Result;
+use poise::serenity_prelude::{Builder as _, EditInteractionResponse, Member};
 
 use crate::{Context, Data};
 
@@ -34,4 +35,22 @@ pub fn escape(s: &str) -> String {
             out.push(c);
             out
         })
+}
+
+/// Removes the buttons from a command's ephemeral reply once its collector times out, keeping the
+/// rest. Only an unexpired interaction token can edit an ephemeral reply, so this uses the newest
+/// press's, or the command's own if nothing was pressed. Not poise's `ReplyHandle::edit`, which
+/// always sends `embeds` and so would clear the embed, leaving a message Discord refuses as empty.
+async fn remove_buttons(ctx: Context<'_>, last: Option<String>) -> Result<()> {
+    let token = match (last, ctx) {
+        (Some(token), _) => token,
+        (None, Context::Application(app)) => app.interaction.token.clone(),
+        // Prefix commands aren't registered
+        (None, Context::Prefix(_)) => return Ok(()),
+    };
+    EditInteractionResponse::new()
+        .components(vec![])
+        .execute(ctx, &token)
+        .await?;
+    Ok(())
 }

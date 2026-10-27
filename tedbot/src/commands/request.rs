@@ -24,7 +24,7 @@ use poise::{
 };
 use tracing::warn;
 
-use super::{escape, is_admin};
+use super::{escape, is_admin, remove_buttons};
 use crate::{
     Context, Data,
     arr::Removed,
@@ -161,20 +161,7 @@ pub async fn request(
     }
 
     // The newest token is the only one guaranteed not to have expired
-    match last {
-        Some(token) => {
-            EditInteractionResponse::new()
-                .components(vec![])
-                .execute(ctx, &token)
-                .await?;
-        }
-        None => {
-            handle
-                .edit(ctx, CreateReply::default().components(vec![]))
-                .await?;
-        }
-    }
-    Ok(())
+    remove_buttons(ctx, last).await
 }
 
 /// Suggests up to 25 movies and shows (Discord's limit), filling in `movie:id` or `tv:id` so the
