@@ -123,7 +123,9 @@ async fn notify(State(hook): State<Arc<Hook>>, headers: HeaderMap, body: Bytes) 
             }
             Err(_) => warn!("Seerr webhook has request id {:?}", request.request_id),
         },
-        Ok(_) => {}
+        Ok(Notification {
+            notification_type, ..
+        }) => info!("Seerr sent {notification_type}"),
         Err(e) => warn!("Reading Seerr's webhook: {e}"),
     }
     hook.forward(&headers, body).await
@@ -132,6 +134,7 @@ async fn notify(State(hook): State<Arc<Hook>>, headers: HeaderMap, body: Bytes) 
 impl Hook {
     /// Acts on a notification of type `kind` about request `id`
     async fn handle(&self, kind: &str, id: u32) {
+        info!("Seerr sent {kind} for request {id}");
         match kind {
             "MEDIA_PENDING" | "MEDIA_AUTO_APPROVED" => self.announce(Event::Requested, id).await,
             "MEDIA_AVAILABLE" => {

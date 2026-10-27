@@ -160,6 +160,9 @@ async fn on_error(err: FrameworkError<'_>) {
     if let poise::FrameworkError::Command { error, ctx, .. } = err {
         error!("{error:#}");
         drop(ctx.send(reply("Error executing command \u{1fae4}")).await);
+    } else if let poise::FrameworkError::EventHandler { error, event, .. } = err {
+        // Its `Display` leaves out the error itself
+        error!("Handling {}: {error:#}", event.snake_case_name());
     } else {
         error!("{err}");
         if let Some(ctx) = err.ctx() {
