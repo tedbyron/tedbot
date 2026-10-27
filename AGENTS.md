@@ -68,9 +68,12 @@ store):
   `request-post:<id>-<action>`. `discord.admin_role`, if set, is pinged for
   requests waiting for approval (the only allowed mention; the role must be
   mentionable or the bot allowed to mention all roles). The webhook keeps each
-  request's posts for the run and rebuilds them on `MEDIA_APPROVED`,
-  `MEDIA_DECLINED`, `MEDIA_AVAILABLE` and `MEDIA_FAILED`; after a restart only a
-  press or 🔄 does. `Data` is in an `Arc` so the webhook shares it.
+  open request's posts, found in the channels' last 1000 messages at startup,
+  and rebuilds them on `MEDIA_APPROVED`, `MEDIA_DECLINED`, `MEDIA_AVAILABLE` and
+  `MEDIA_FAILED`, and every 15 minutes, since Seerr says nothing when a show is
+  partly downloaded (`MEDIA_AVAILABLE` waits for every requested season) or a
+  download starts. Declined, completed and deleted requests are dropped. `Data`
+  is in an `Arc` so the webhook shares it.
 - **Available channel** (done): "now available" posts in each of
   `seerr.webhook.available_channels` when Seerr's webhook sends
   `MEDIA_AVAILABLE`: poster, title, overview, seasons and requester, with
@@ -80,8 +83,13 @@ store):
   are read from Seerr's `status4k`, `mediaUrl4k` and `jellyfinMediaId4k`, and
   marked "(4K)". Cancelling one takes it out of the 4K Radarr or Sonarr
   (optional `[radarr_4k]`/`[sonarr_4k]` config), and admins pick its quality
-  from Seerr's default 4K server's profiles. `/request` only requests and
-  cancels HD, so its cards leave 4K requests to `/requests`.
+  from Seerr's default 4K server's profiles. `/request` cards show both
+  versions' status; 4K is only an upgrade there, offered for what's downloaded
+  in HD to users with Seerr's Request 4K (or its movie/series variant), with a
+  button switching the card's menus and buttons between HD and 4K.
+- Approved but not downloaded reads "download queued" or "download started",
+  by whether Radarr's or Sonarr's queue has any bytes of it (`arr.rs`), checked
+  only for what's approved.
 - Both channels' posts come from `announce.rs`. The requester shows as a mention
   (no ping: it's in an embed) when their `discordIds` account is in that
   channel's server, else by Seerr name. They need Send Messages and Embed Links

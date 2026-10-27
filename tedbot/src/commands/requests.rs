@@ -21,12 +21,13 @@ use futures::future::join_all;
 use poise::{
     ChoiceParameter, CreateReply, command,
     serenity_prelude::{
-        self as serenity, Builder as _, ButtonStyle, Channel, ChannelId, ComponentInteraction,
-        ComponentInteractionCollector, ComponentInteractionDataKind, CreateActionRow, CreateButton,
-        CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
-        CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateSelectMenu,
-        CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse, EditMessage, Embed,
-        GuildId, Http, Mentionable as _, MessageId, UserId,
+        self as serenity, ActionRowComponent, Builder as _, Button, ButtonKind, ButtonStyle,
+        Channel, ChannelId, ComponentInteraction, ComponentInteractionCollector,
+        ComponentInteractionDataKind, CreateActionRow, CreateButton, CreateEmbed,
+        CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseFollowup,
+        CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind,
+        CreateSelectMenuOption, EditInteractionResponse, EditMessage, Embed, GuildId, Http,
+        Mentionable as _, Message, MessageId, UserId,
     },
 };
 use tracing::warn;
@@ -1067,16 +1068,23 @@ pub async fn post_card(
     Ok((screen.embed, screen.components))
 }
 
-/// Rebuilds the post `message` in `channel` of request `id`, after it changed somewhere else
+/// Rebuilds the post `message` in `channel` of request `id`, after it changed somewhere else.
+/// Returns whether the request is still open, so it may change again: not declined, done, or
+/// gone from Seerr.
 pub async fn refresh_post(
     data: &Data,
     discord: &Arc<Http>,
     channel: ChannelId,
     message: MessageId,
     id: u32,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut open = false;
     let edit = match data.seerr.request_by_id(&data.http, id).await? {
         Some(request) => {
+            open = !matches!(
+                request.status,
+                RequestStatus::Declined | RequestStatus::Completed
+            );
             let guild = match channel.to_channel(discord).await? {
                 Channel::Guild(channel) => Some(channel.guild_id),
                 _ => None,
@@ -1092,7 +1100,27 @@ pub async fn refresh_post(
         }
     };
     channel.edit_message(discord, message, edit).await?;
-    Ok(())
+    Ok(open)
+}
+
+/// The request `message` is a post of, if it's one
+pub fn post_request(message: &Message) -> Option<u32> {
+    message
+        .components
+        .iter()
+        .flat_map(|row| &row.components)
+        .find_map(|component| match component {
+            ActionRowComponent::Button(Button {
+                data: ButtonKind::NonLink { custom_id, .. },
+                ..
+            }) => custom_id
+                .strip_prefix(POST)?
+                .split_once('-')?
+                .0
+                .parse()
+                .ok(),
+            _ => None,
+        })
 }
 
 /// A post's card once its request is no longer in Seerr
