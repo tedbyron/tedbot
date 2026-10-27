@@ -72,8 +72,10 @@ store):
   and rebuilds them on `MEDIA_APPROVED`, `MEDIA_DECLINED`, `MEDIA_AVAILABLE` and
   `MEDIA_FAILED`, and every 15 minutes, since Seerr says nothing when a show is
   partly downloaded (`MEDIA_AVAILABLE` waits for every requested season) or a
-  download starts. Declined, completed and deleted requests are dropped. `Data`
-  is in an `Arc` so the webhook shares it.
+  download starts. Declined, completed and deleted requests are dropped. Posts
+  are only edited when what they show changed: Discord allows only a few edits a
+  minute to messages over an hour old. `Data` is in an `Arc` so the webhook
+  shares it.
 - **Available channel** (done): "now available" posts in each of
   `seerr.webhook.available_channels` when Seerr's webhook sends
   `MEDIA_AVAILABLE`: poster, title, overview, seasons and requester, with

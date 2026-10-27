@@ -5,7 +5,9 @@
 //! New and available requests are posted in Discord ([`announce`]), and request posts are kept
 //! up to date as Seerr says their requests change. Seerr doesn't say when a show is partly
 //! downloaded or a download starts, so open requests' posts are also rebuilt every
-//! [`SWEEP_EVERY`], starting with those found in the requests channels at startup.
+//! [`SWEEP_EVERY`], starting with those found in the requests channels at startup. Posts are only
+//! edited when they'd change: Discord allows only a few edits a minute to messages over an hour
+//! old.
 //!
 //! Listens on localhost only. Point Seerr's webhook URL at `http://localhost:<port>/seerr`.
 //! `GET /health` answers 200, for uptime probes; it's only served once Discord is connected.
@@ -26,22 +28,28 @@ use axum::{
     response::{IntoResponse as _, Response},
     routing::{get, post},
 };
-use futures::future::join_all;
-use poise::serenity_prelude::{ChannelId, GetMessages, Http, MessageId, UserId};
-use serde::Deserialize;
+use futures::{StreamExt as _, future::join_all, stream};
+use poise::serenity_prelude::{
+    Channel, ChannelId, CreateActionRow, CreateEmbed, EditMessage, GetMessages, GuildId, Http,
+    Message, MessageId, UserId,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::{net::TcpListener, time::MissedTickBehavior};
 use tracing::{error, info, warn};
 
 use crate::{
     Data,
     announce::{self, Event, Targets},
-    commands::requests::{post_request, refresh_post},
+    commands::requests::{mark_gone, post_now, post_request},
 };
 
 /// How often open requests' posts are rebuilt
 const SWEEP_EVERY: Duration = Duration::from_secs(15 * 60);
 /// How many of each requests channel's latest messages are searched for posts at startup
 const HISTORY: usize = 1000;
+/// How many posts are rebuilt at once
+const SWEEP_AT_ONCE: usize = 4;
 
 /// The bound listener, waiting for the Discord connection before serving
 #[derive(Debug)]
@@ -62,6 +70,10 @@ struct Hook {
     posted: Mutex<HashSet<(Event, u32)>>,
     /// Each open request's posts in the requests channels
     posts: Mutex<HashMap<u32, Vec<(ChannelId, MessageId)>>>,
+    /// What each post shows, as [`look`] has it, so rebuilding it only edits it if that changed
+    shown: Mutex<HashMap<MessageId, Value>>,
+    /// The server each requests channel is in, as looked up so far
+    guilds: Mutex<HashMap<ChannelId, Option<GuildId>>>,
 }
 
 /// The parts of a notification the bot reads. Seerr's default payload and Moonfin's both have
@@ -102,6 +114,8 @@ impl Listener {
             targets: self.targets,
             posted: Mutex::default(),
             posts: Mutex::default(),
+            shown: Mutex::default(),
+            guilds: Mutex::default(),
         });
         if !hook.targets.requests.is_empty() {
             let hook = hook.clone();
@@ -122,8 +136,13 @@ impl Listener {
     }
 }
 
-/// The posts by `me` in the last [`HISTORY`] messages of `channel`, by request
-async fn posts_in(discord: &Http, channel: ChannelId, me: UserId) -> Result<Vec<(u32, MessageId)>> {
+/// The posts by `me` in the last [`HISTORY`] messages of `channel`: each one's request, id and
+/// [`look`]
+async fn posts_in(
+    discord: &Http,
+    channel: ChannelId,
+    me: UserId,
+) -> Result<Vec<(u32, MessageId, Value)>> {
     let mut found = Vec::new();
     let mut before = None;
     for _ in 0..HISTORY.div_ceil(100) {
@@ -137,13 +156,60 @@ async fn posts_in(discord: &Http, channel: ChannelId, me: UserId) -> Result<Vec<
             messages
                 .iter()
                 .filter(|m| m.author.id == me)
-                .filter_map(|m| Some((post_request(m)?, m.id))),
+                .filter_map(|m| Some((post_request(m)?, m.id, message_look(m)))),
         );
         if messages.len() < 100 {
             break;
         }
     }
     Ok(found)
+}
+
+/// What a post with `embed` and `components` shows, to tell whether rebuilding it changed
+/// anything
+fn look(embed: &CreateEmbed, components: &[CreateActionRow]) -> Value {
+    shape(embed, components)
+}
+
+/// What `message` shows, comparable with [`look`]
+fn message_look(message: &Message) -> Value {
+    shape(&message.embeds.first(), &message.components)
+}
+
+/// The embed and components as Discord's JSON, [`normalize`]d
+fn shape(embed: &impl Serialize, components: &(impl Serialize + ?Sized)) -> Value {
+    let embed = serde_json::to_value(embed).unwrap_or(Value::Null);
+    let components = serde_json::to_value(components).unwrap_or(Value::Null);
+    normalize(serde_json::json!({ "embed": embed, "components": components }))
+        .unwrap_or(Value::Null)
+}
+
+/// `value` without what differs between a message as sent and as Discord returns it: ids and
+/// image sizes Discord adds, the embed type, and nulls, falses and empties that one side leaves
+/// out. `None` if nothing's left.
+fn normalize(value: Value) -> Option<Value> {
+    match value {
+        Value::Null | Value::Bool(false) => None,
+        Value::String(s) if s.is_empty() || s == "rich" => None,
+        Value::Array(items) => {
+            let items: Vec<Value> = items.into_iter().filter_map(normalize).collect();
+            (!items.is_empty()).then_some(Value::Array(items))
+        }
+        Value::Object(fields) => {
+            let fields: serde_json::Map<String, Value> = fields
+                .into_iter()
+                .filter(|(key, value)| {
+                    !matches!(
+                        key.as_str(),
+                        "proxy_url" | "width" | "height" | "proxy_icon_url"
+                    ) && !(key == "id" && value.is_number())
+                })
+                .filter_map(|(key, value)| Some((key, normalize(value)?)))
+                .collect();
+            (!fields.is_empty()).then_some(Value::Object(fields))
+        }
+        value => Some(value),
+    }
 }
 
 /// Handles a notification from Seerr, then forwards it
@@ -189,7 +255,7 @@ impl Hook {
         let posts = self.posts.lock().unwrap().get(&id).cloned();
         let mut open = false;
         for (channel, message) in posts.into_iter().flatten() {
-            match refresh_post(&self.data, &self.discord, channel, message, id).await {
+            match self.refresh_post(channel, message, id).await {
                 Ok(still) => open |= still,
                 Err(e) => {
                     warn!("Refreshing request {id}'s post in channel {channel}: {e:#}");
@@ -198,6 +264,40 @@ impl Hook {
             }
         }
         open
+    }
+
+    /// Rebuilds post `message` in `channel` of request `id`, editing it if that changes it.
+    /// Returns whether the request may still change.
+    async fn refresh_post(&self, channel: ChannelId, message: MessageId, id: u32) -> Result<bool> {
+        let guild = self.guild(channel).await?;
+        let Some((embed, components, open)) =
+            post_now(&self.data, &self.discord, guild, id).await?
+        else {
+            mark_gone(&self.discord, channel, message).await?;
+            self.shown.lock().unwrap().remove(&message);
+            return Ok(false);
+        };
+        let now = look(&embed, &components);
+        if self.shown.lock().unwrap().get(&message) == Some(&now) {
+            return Ok(open);
+        }
+        let edit = EditMessage::new().embed(embed).components(components);
+        channel.edit_message(&self.discord, message, edit).await?;
+        self.shown.lock().unwrap().insert(message, now);
+        Ok(open)
+    }
+
+    /// The server `channel` is in, if it's in one
+    async fn guild(&self, channel: ChannelId) -> Result<Option<GuildId>> {
+        if let Some(&guild) = self.guilds.lock().unwrap().get(&channel) {
+            return Ok(guild);
+        }
+        let guild = match channel.to_channel(&self.discord).await? {
+            Channel::Guild(channel) => Some(channel.guild_id),
+            _ => None,
+        };
+        self.guilds.lock().unwrap().insert(channel, guild);
+        Ok(guild)
     }
 
     /// Finds the posts in the requests channels, then rebuilds open requests' posts every
@@ -209,10 +309,15 @@ impl Hook {
         loop {
             every.tick().await;
             let ids: Vec<u32> = self.posts.lock().unwrap().keys().copied().collect();
-            for id in ids {
-                if !self.refresh(id).await {
-                    self.posts.lock().unwrap().remove(&id);
-                }
+            let closed: Vec<u32> = stream::iter(ids)
+                .map(|id| async move { (!self.refresh(id).await).then_some(id) })
+                .buffer_unordered(SWEEP_AT_ONCE)
+                .filter_map(|closed| async move { closed })
+                .collect()
+                .await;
+            let mut posts = self.posts.lock().unwrap();
+            for id in closed {
+                posts.remove(&id);
             }
         }
     }
@@ -236,13 +341,15 @@ impl Hook {
             };
             info!("Found {} request posts in channel {channel}", found.len());
             let mut posts = self.posts.lock().unwrap();
-            for (id, message) in found {
+            let mut shown = self.shown.lock().unwrap();
+            for (id, message, look) in found {
                 let list = posts.entry(id).or_default();
                 if !list.contains(&(channel, message)) {
                     list.push((channel, message));
                 }
+                shown.insert(message, look);
             }
-            drop(posts);
+            drop((posts, shown));
         }
     }
 
@@ -342,6 +449,26 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn normalized() {
+        let value = serde_json::json!({
+            "type": "rich",
+            "title": "Dune",
+            "thumbnail": {"url": "a", "proxy_url": "b", "width": 1, "height": 2},
+            "fields": [{"name": "Status", "value": "Downloaded", "inline": false}],
+            "components": [{"type": 2, "id": 3, "custom_id": "x", "disabled": false, "emoji": {"id": null}}],
+        });
+        assert_eq!(
+            normalize(value),
+            Some(serde_json::json!({
+                "title": "Dune",
+                "thumbnail": {"url": "a"},
+                "fields": [{"name": "Status", "value": "Downloaded"}],
+                "components": [{"type": 2, "custom_id": "x"}],
+            }))
+        );
+    }
     use crate::{ersatztv::GuideCache, jellyfin::Jellyfin, seerr::Seerr};
 
     /// The Authorization header and body the upstream got

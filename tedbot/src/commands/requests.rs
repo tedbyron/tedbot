@@ -22,7 +22,7 @@ use poise::{
     ChoiceParameter, CreateReply, command,
     serenity_prelude::{
         self as serenity, ActionRowComponent, Builder as _, Button, ButtonKind, ButtonStyle,
-        Channel, ChannelId, ComponentInteraction, ComponentInteractionCollector,
+        ChannelId, ComponentInteraction, ComponentInteractionCollector,
         ComponentInteractionDataKind, CreateActionRow, CreateButton, CreateEmbed,
         CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseFollowup,
         CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind,
@@ -1073,39 +1073,33 @@ pub async fn post_card(
     Ok((screen.embed, screen.components))
 }
 
-/// Rebuilds the post `message` in `channel` of request `id`, after it changed somewhere else.
-/// Returns whether the request is still open, so it may change again: not declined, done, or
-/// gone from Seerr.
-pub async fn refresh_post(
+/// What a post of request `id` in `guild`'s channels looks like now, and whether the request is
+/// still open, so it may change again: not declined or done. `None` if it's gone from Seerr.
+pub async fn post_now(
     data: &Data,
     discord: &Arc<Http>,
-    channel: ChannelId,
-    message: MessageId,
+    guild: Option<GuildId>,
     id: u32,
-) -> Result<bool> {
-    let mut open = false;
-    let edit = match data.seerr.request_by_id(&data.http, id).await? {
-        Some(request) => {
-            open = !matches!(
-                request.status,
-                RequestStatus::Declined | RequestStatus::Completed
-            );
-            let guild = match channel.to_channel(discord).await? {
-                Channel::Guild(channel) => Some(channel.guild_id),
-                _ => None,
-            };
-            let (embed, components) = post_card(data, discord.clone(), guild, request).await?;
-            EditMessage::new().embed(embed).components(components)
-        }
-        None => {
-            let old = channel.message(discord, message).await?;
-            EditMessage::new()
-                .embed(gone_embed(old.embeds.first()))
-                .components(vec![])
-        }
+) -> Result<Option<(CreateEmbed, Vec<CreateActionRow>, bool)>> {
+    let Some(request) = data.seerr.request_by_id(&data.http, id).await? else {
+        return Ok(None);
     };
+    let open = !matches!(
+        request.status,
+        RequestStatus::Declined | RequestStatus::Completed
+    );
+    let (embed, components) = post_card(data, discord.clone(), guild, request).await?;
+    Ok(Some((embed, components, open)))
+}
+
+/// Marks post `message` in `channel` as being of a request no longer in Seerr
+pub async fn mark_gone(discord: &Http, channel: ChannelId, message: MessageId) -> Result<()> {
+    let old = channel.message(discord, message).await?;
+    let edit = EditMessage::new()
+        .embed(gone_embed(old.embeds.first()))
+        .components(vec![]);
     channel.edit_message(discord, message, edit).await?;
-    Ok(open)
+    Ok(())
 }
 
 /// The request `message` is a post of, if it's one
