@@ -34,10 +34,11 @@ use tracing::warn;
 
 use super::{
     escape, has_admin_role, is_admin, remove_buttons,
-    request::{can_unsend, cancel, ranges, request_started, status, truncate},
+    request::{can_unsend, cancel, ranges, request_download, status, truncate},
 };
 use crate::{
     Context, Data,
+    arr::Download,
     seerr::{
         self, Cancellable, Changed, Details, Media, Profiles, Request, RequestStatus, RequestedBy,
         Requester, Status,
@@ -397,7 +398,7 @@ impl Viewer {
         let movies = matches!(request.media()?, Media::Movie(_));
         self.profiles.iter().find(|p| {
             p.movies == movies
-                && p.is4k == request.is4k
+                && p.is_4k == request.is_4k
                 && request.server_id.is_none_or(|s| s == p.server)
         })
     }
@@ -523,15 +524,15 @@ impl Screen {
             }
         }));
         let (details, names) = tokio::join!(details, names);
-        let started = join_all(
+        let downloads = join_all(
             listed
                 .requests
                 .iter()
                 .zip(&details)
                 .map(|(r, d)| async move {
                     match d {
-                        Some(d) => request_started(data, r, d).await,
-                        None => false,
+                        Some(d) => request_download(data, r, d).await,
+                        None => None,
                     }
                 }),
         )
@@ -539,19 +540,19 @@ impl Screen {
 
         let mut rows = Vec::new();
         let mut options = Vec::new();
-        for (i, (((request, details), name), started)) in listed
+        for (i, (((request, details), name), download)) in listed
             .requests
             .iter()
             .zip(&details)
             .zip(names)
-            .zip(started)
+            .zip(downloads)
             .enumerate()
         {
             let title = details.as_ref().map_or_else(
                 || "Unknown title".to_owned(),
                 |d| seerr::with_year(&d.title, d.release_date.as_deref()),
             );
-            let label = label(request, details.as_ref(), started);
+            let label = label(request, details.as_ref(), download);
             let mut line = format!("**{}**{}", escape(&title), seasons(request, " \u{b7} "));
             let mut about = vec![label.clone()];
             about.extend(name);
@@ -660,8 +661,8 @@ impl Screen {
         if let Some(path) = &details.poster_path {
             embed = embed.thumbnail(format!("{POSTER_URL}{path}"));
         }
-        let started = request_started(data, &request, &details).await;
-        embed = embed.field("Status", label(&request, Some(&details), started), false);
+        let download = request_download(data, &request, &details).await;
+        embed = embed.field("Status", label(&request, Some(&details), download), false);
         if !request.seasons.is_empty() {
             embed = embed.field("Seasons", ranges(&request.season_numbers()), true);
         }
@@ -702,7 +703,7 @@ impl Screen {
         let cancellable: Vec<Cancellable> = details
             .cancellable(viewer.user.map(|u| u.id), viewer.admin)
             .into_iter()
-            .filter(|c| c.id == request.id && (can_unsend(data, media, c.is4k) || !c.sent))
+            .filter(|c| c.id == request.id && (can_unsend(data, media, c.is_4k) || !c.sent))
             .collect();
         let reviewable = viewer.admin && request.status == RequestStatus::Pending;
         // How many pending requests would be approved together, itself included
@@ -826,7 +827,7 @@ impl Screen {
         if let Some(url) = details
             .media_info
             .as_ref()
-            .and_then(|m| m.jellyfin_url(request.is4k))
+            .and_then(|m| m.jellyfin_url(request.is_4k))
         {
             buttons.push(CreateButton::new_link(url).label("Jellyfin"));
         }
@@ -1037,9 +1038,9 @@ impl Card {
 /// The default HD and 4K servers' movie and show quality profiles, for admins to change
 /// requests between and for requesting
 pub(super) async fn profiles(data: &Data) -> Vec<Profiles> {
-    let profiles = |media, is4k| async move {
+    let profiles = |media, is_4k| async move {
         data.seerr
-            .profiles(&data.http, media, is4k)
+            .profiles(&data.http, media, is_4k)
             .await
             .inspect_err(|e| warn!("Fetching quality profiles: {e:#}"))
             .ok()
@@ -1335,24 +1336,24 @@ fn batch(requests: Vec<Request>, id: u32) -> Vec<Request> {
 }
 
 /// How a request's status reads: its own while it's pending, declined or failed, else where
-/// what it asked for stands. `details` is the media's, if it could be fetched, and `started`
-/// whether its download has.
-fn label(request: &Request, details: Option<&Details>, started: bool) -> String {
+/// what it asked for stands. `details` is the media's, if it could be fetched, and `download`
+/// how far its download has got.
+fn label(request: &Request, details: Option<&Details>, download: Option<Download>) -> String {
     let label = match request.status {
-        RequestStatus::Pending => status(Status::Pending, false, false),
+        RequestStatus::Pending => status(Status::Pending, false, None),
         RequestStatus::Declined => "Declined",
         RequestStatus::Failed => "Failed, see Seerr",
         RequestStatus::Approved | RequestStatus::Completed => {
             match details.map_or(Status::Processing, |d| d.request_status(request)) {
                 s @ (Status::Available | Status::PartiallyAvailable | Status::Blocklisted) => {
-                    status(s, false, false)
+                    status(s, false, None)
                 }
                 Status::Missing if request.status == RequestStatus::Completed => "Deleted since",
-                _ => status(Status::Processing, request.automatic(), started),
+                _ => status(Status::Processing, request.automatic(), download),
             }
         }
     };
-    if request.is4k {
+    if request.is_4k {
         format!("{label} (4K)")
     } else {
         label.to_owned()

@@ -12,7 +12,7 @@
 //! Users Seerr lets request 4K can also request a 4K version of what's already downloaded in
 //! HD, with a button switching the card between the two.
 
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Context as _, Result};
 use poise::{
@@ -30,7 +30,7 @@ use tracing::warn;
 use super::{escape, is_admin, remove_buttons, requests::profiles};
 use crate::{
     Context, Data,
-    arr::{Arr, Removed},
+    arr::{Arr, Download, Removed},
     seerr::{
         self, Cancellable, Changed, Details, Media, Profile, Profiles, Quotas, Request,
         RequestStatus, Requested, Requester, SearchResult, Status,
@@ -141,8 +141,8 @@ pub async fn request(
         }
         let mut notice = done.and_then(|(notice, _)| notice);
         // The same result stays on the version it was on
-        let is4k = index == card.index && card.is4k;
-        match Card::build(data, &results, index, &viewer, is4k).await {
+        let is_4k = index == card.index && card.is_4k;
+        match Card::build(data, &results, index, &viewer, is_4k).await {
             Ok(next) => {
                 card = next;
                 EditInteractionResponse::new()
@@ -265,11 +265,11 @@ impl Viewer {
     }
 
     /// The default HD or 4K server's profiles for `media`, if there's such a server
-    fn server(&self, media: Media, is4k: bool) -> Option<&Profiles> {
+    fn server(&self, media: Media, is_4k: bool) -> Option<&Profiles> {
         let movies = matches!(media, Media::Movie(_));
         self.profiles
             .iter()
-            .find(|p| p.movies == movies && p.is4k == is4k)
+            .find(|p| p.movies == movies && p.is_4k == is_4k)
     }
 }
 
@@ -310,7 +310,7 @@ struct Card {
     /// The HD and 4K versions
     versions: [Version; 2],
     /// Which version the menus and buttons are for
-    is4k: bool,
+    is_4k: bool,
     /// Seasons picked in the menu. Empty means all of the version's open seasons.
     picked: Vec<u32>,
     /// Profile picked in the menu, `None` for Seerr's default
@@ -325,13 +325,13 @@ struct Card {
 
 impl Card {
     /// Fetches result `index` (wrapping around) from Seerr and renders it, for the 4K version
-    /// if `is4k` and there's anything to do with it
+    /// if `is_4k` and there's anything to do with it
     async fn build(
         data: &Data,
         results: &[Media],
         index: usize,
         viewer: &Viewer,
-        is4k: bool,
+        is_4k: bool,
     ) -> Result<Self> {
         let index = index % results.len();
         let media = results[index];
@@ -360,26 +360,26 @@ impl Card {
             Media::Movie(_) => vec![None],
             Media::Tv(_) => numbers.iter().copied().map(Some).collect(),
         };
-        let status_of = |n: Option<u32>, is4k| {
+        let status_of = |n: Option<u32>, is_4k| {
             n.map_or_else(
-                || details.status_of(is4k),
-                |n| details.season_status_of(n, is4k),
+                || details.status_of(is_4k),
+                |n| details.season_status_of(n, is_4k),
             )
         };
-        let processing = |is4k| {
+        let processing = |is_4k| {
             keys.iter()
-                .any(|&n| status_of(n, is4k) == Status::Processing)
+                .any(|&n| status_of(n, is_4k) == Status::Processing)
         };
-        let started: [Started; 2] = tokio::join!(
-            started_if(data, media, tvdb_id, false, processing(false)),
-            started_if(data, media, tvdb_id, true, processing(true)),
+        let downloads: [Downloads; 2] = tokio::join!(
+            downloads_if(data, media, tvdb_id, false, processing(false)),
+            downloads_if(data, media, tvdb_id, true, processing(true)),
         )
         .into();
-        let label = |n: Option<u32>, is4k: bool| {
+        let label = |n: Option<u32>, is_4k: bool| {
             status(
-                status_of(n, is4k),
-                details.auto_approved(n, is4k),
-                started[usize::from(is4k)].of(n),
+                status_of(n, is_4k),
+                details.auto_approved(n, is_4k),
+                downloads[usize::from(is_4k)].of(n),
             )
         };
 
@@ -401,10 +401,10 @@ impl Card {
                 )
             }
             Media::Tv(_) => {
-                let lines = |is4k| -> Vec<(u32, &'static str, Status)> {
+                let lines = |is_4k| -> Vec<(u32, &'static str, Status)> {
                     numbers
                         .iter()
-                        .map(|&n| (n, label(Some(n), is4k), status_of(Some(n), is4k)))
+                        .map(|&n| (n, label(Some(n), is_4k), status_of(Some(n), is_4k)))
                         .collect()
                 };
                 embed = embed.field("Seasons", season_lines(&lines(false)), false);
@@ -415,13 +415,13 @@ impl Card {
                 if !known_4k.is_empty() {
                     embed = embed.field("4K seasons", season_lines(&known_4k), false);
                 }
-                let open = |is4k| -> Vec<u32> {
+                let open = |is_4k| -> Vec<u32> {
                     numbers
                         .iter()
                         .copied()
                         .filter(|&n| {
-                            status_of(Some(n), is4k) == Status::Missing
-                                && (!is4k
+                            status_of(Some(n), is_4k) == Status::Missing
+                                && (!is_4k
                                     || can_4k && status_of(Some(n), false) == Status::Available)
                         })
                         .collect()
@@ -445,15 +445,15 @@ impl Card {
             ..Version::default()
         });
         let [hd, uhd] = versions;
-        let versions = [(hd, false), (uhd, true)].map(|(version, is4k)| Version {
+        let versions = [(hd, false), (uhd, true)].map(|(version, is_4k)| Version {
             profiles: viewer
-                .server(media, is4k)
+                .server(media, is_4k)
                 .filter(|_| can_pick)
                 .map(|p| p.list.clone())
                 .unwrap_or_default(),
             cancellable: cancellable
                 .iter()
-                .filter(|c| c.is4k == is4k && (can_unsend(data, media, is4k) || !c.sent))
+                .filter(|c| c.is_4k == is_4k && (can_unsend(data, media, is_4k) || !c.sent))
                 .cloned()
                 .collect(),
             ..version
@@ -490,8 +490,8 @@ impl Card {
             embed = embed.footer(CreateEmbedFooter::new(footer.join("\n")));
         }
 
-        let is4k = if versions[usize::from(is4k)].active() {
-            is4k
+        let is_4k = if versions[usize::from(is_4k)].active() {
+            is_4k
         } else {
             !versions[0].active() && versions[1].active()
         };
@@ -508,7 +508,7 @@ impl Card {
             count: results.len(),
             linked,
             versions,
-            is4k,
+            is_4k,
             picked: Vec::new(),
             profile: None,
             can_bypass: limited && viewer.user.is_some_and(Requester::can_bypass_quota),
@@ -519,7 +519,7 @@ impl Card {
 
     /// The version the menus and buttons are for
     const fn version(&self) -> &Version {
-        &self.versions[self.is4k as usize]
+        &self.versions[self.is_4k as usize]
     }
 
     /// The seasons a request would ask for: the picked ones, or all open ones
@@ -533,7 +533,7 @@ impl Card {
 
     /// Switches the menus and buttons to the other version, clearing what was picked
     fn switch(&mut self) {
-        self.is4k = !self.is4k;
+        self.is_4k = !self.is_4k;
         self.picked.clear();
         self.profile = None;
     }
@@ -546,7 +546,7 @@ impl Card {
             seasons: self.seasons(),
             profile: self.profile,
             ignore_quota: self.can_bypass && bypass,
-            is4k: self.is4k,
+            is_4k: self.is_4k,
         };
         match data
             .seerr
@@ -651,7 +651,7 @@ impl Card {
             );
         }
         if !version.cancellable.is_empty() {
-            let label = if self.is4k {
+            let label = if self.is_4k {
                 "Cancel 4K request"
             } else {
                 "Cancel request"
@@ -659,7 +659,7 @@ impl Card {
             buttons.push(button("cancel").label(label).style(ButtonStyle::Danger));
         }
         if self.versions.iter().all(Version::active) {
-            let label = if self.is4k {
+            let label = if self.is_4k {
                 "Switch to HD"
             } else {
                 "Switch to 4K"
@@ -694,7 +694,7 @@ impl Card {
             _ if self.picked.is_empty() => "Request all seasons".into(),
             (_, many) => format!("Request {} seasons", many.len()),
         };
-        if self.is4k {
+        if self.is_4k {
             format!("{label} in 4K")
         } else {
             label
@@ -702,78 +702,83 @@ impl Card {
     }
 }
 
-/// Which downloads of a movie or show have started in Radarr or Sonarr
+/// How far a movie's or show's downloads in Radarr or Sonarr have got
 #[derive(Debug, Default)]
-pub(super) struct Started {
-    movie: bool,
-    seasons: Vec<u32>,
+struct Downloads {
+    movie: Option<Download>,
+    /// By season, for seasons with anything in the queue
+    seasons: HashMap<u32, Download>,
 }
 
-impl Started {
-    /// Whether season `n`'s download has, or with `None` the movie's
-    fn of(&self, n: Option<u32>) -> bool {
-        n.map_or(self.movie, |n| self.seasons.contains(&n))
+impl Downloads {
+    /// Season `n`'s, or with `None` the movie's. `None` if nothing's in the queue for it.
+    fn of(&self, n: Option<u32>) -> Option<Download> {
+        n.map_or(self.movie, |n| self.seasons.get(&n).copied())
     }
 }
 
-/// Which downloads of `media`'s HD or 4K version have started, if `check`. Best effort: without
-/// Radarr or Sonarr, or if it can't be reached, none have.
-async fn started_if(
+/// How far the downloads of `media`'s HD or 4K version have got, if `check`. Best effort:
+/// without Radarr or Sonarr, or if it can't be reached, there are none.
+async fn downloads_if(
     data: &Data,
     media: Media,
     tvdb_id: Option<u32>,
-    is4k: bool,
+    is_4k: bool,
     check: bool,
-) -> Started {
-    let Some(arr) = arr(data, media, is4k).filter(|_| check) else {
-        return Started::default();
+) -> Downloads {
+    let Some(arr) = arr(data, media, is_4k).filter(|_| check) else {
+        return Downloads::default();
     };
-    let started = match (media, tvdb_id) {
+    let downloads = match (media, tvdb_id) {
         (Media::Movie(tmdb_id), _) => {
-            arr.movie_started(&data.http, tmdb_id)
+            arr.movie_download(&data.http, tmdb_id)
                 .await
-                .map(|movie| Started {
+                .map(|movie| Downloads {
                     movie,
-                    seasons: Vec::new(),
+                    ..Downloads::default()
                 })
         }
         (Media::Tv(_), Some(tvdb_id)) => {
-            arr.seasons_started(&data.http, tvdb_id)
+            arr.season_downloads(&data.http, tvdb_id)
                 .await
-                .map(|seasons| Started {
-                    movie: false,
+                .map(|seasons| Downloads {
                     seasons,
+                    ..Downloads::default()
                 })
         }
-        (Media::Tv(_), None) => return Started::default(),
+        (Media::Tv(_), None) => return Downloads::default(),
     };
-    started
+    downloads
         .inspect_err(|e| {
             warn!(
                 "Checking {}'s downloads of {media}: {e:#}",
-                arr_name(media, is4k)
-            )
+                arr_name(media, is_4k)
+            );
         })
         .unwrap_or_default()
 }
 
-/// Whether a download of what `request` asked for has started, if it's been sent to Radarr or
-/// Sonarr and isn't downloaded yet. `details` is the media's.
-pub(super) async fn request_started(data: &Data, request: &Request, details: &Details) -> bool {
-    let Some(media) = request.media() else {
-        return false;
-    };
+/// How far the download of what `request` asked for has got, if it's been sent to Radarr or
+/// Sonarr and isn't downloaded yet: the furthest of its seasons'. `None` if nothing's in the
+/// queue for it. `details` is the media's.
+pub(super) async fn request_download(
+    data: &Data,
+    request: &Request,
+    details: &Details,
+) -> Option<Download> {
+    let media = request.media()?;
     let check = request.status == RequestStatus::Approved
         && details.request_status(request) == Status::Processing;
     let tvdb_id = details.media_info.as_ref().and_then(|m| m.tvdb_id);
-    let started = started_if(data, media, tvdb_id, request.is4k, check).await;
+    let downloads = downloads_if(data, media, tvdb_id, request.is_4k, check).await;
     if request.seasons.is_empty() {
-        started.movie
+        downloads.movie
     } else {
         request
             .season_numbers()
-            .iter()
-            .any(|n| started.seasons.contains(n))
+            .into_iter()
+            .filter_map(|n| downloads.of(Some(n)))
+            .max()
     }
 }
 
@@ -827,16 +832,16 @@ async fn try_cancel(
     changed: &mut bool,
 ) -> Result<Option<String>> {
     // The HD and 4K copies each have their own Radarr or Sonarr
-    for is4k in [false, true] {
+    for is_4k in [false, true] {
         let sent: Vec<&Cancellable> = cancellable
             .iter()
-            .filter(|c| c.sent && c.is4k == is4k)
+            .filter(|c| c.sent && c.is_4k == is_4k)
             .collect();
         if sent.is_empty() {
             continue;
         }
-        let name = arr_name(media, is4k);
-        let arr = arr(data, media, is4k).with_context(|| format!("{name} isn't configured"))?;
+        let name = arr_name(media, is_4k);
+        let arr = arr(data, media, is_4k).with_context(|| format!("{name} isn't configured"))?;
         let removed = match media {
             Media::Movie(tmdb_id) => arr.remove_movie(&data.http, tmdb_id).await,
             Media::Tv(_) => {
@@ -870,8 +875,8 @@ async fn try_cancel(
 }
 
 /// The Radarr or Sonarr that `media`'s HD or 4K copy goes to, if it's configured
-const fn arr(data: &Data, media: Media, is4k: bool) -> Option<&Arr> {
-    match (media, is4k) {
+const fn arr(data: &Data, media: Media, is_4k: bool) -> Option<&Arr> {
+    match (media, is_4k) {
         (Media::Movie(_), false) => data.radarr.as_ref(),
         (Media::Tv(_), false) => data.sonarr.as_ref(),
         (Media::Movie(_), true) => data.radarr_4k.as_ref(),
@@ -880,8 +885,8 @@ const fn arr(data: &Data, media: Media, is4k: bool) -> Option<&Arr> {
 }
 
 /// [`arr`]'s name, for errors
-const fn arr_name(media: Media, is4k: bool) -> &'static str {
-    match (media, is4k) {
+const fn arr_name(media: Media, is_4k: bool) -> &'static str {
+    match (media, is_4k) {
         (Media::Movie(_), false) => "Radarr",
         (Media::Tv(_), false) => "Sonarr",
         (Media::Movie(_), true) => "4K Radarr",
@@ -891,21 +896,27 @@ const fn arr_name(media: Media, is4k: bool) -> &'static str {
 
 /// Whether Radarr or Sonarr is configured for `media`'s HD or 4K copy, so approved requests for
 /// it can be taken back out
-pub(super) const fn can_unsend(data: &Data, media: Media, is4k: bool) -> bool {
-    arr(data, media, is4k).is_some()
+pub(super) const fn can_unsend(data: &Data, media: Media, is_4k: bool) -> bool {
+    arr(data, media, is_4k).is_some()
 }
 
-/// How a movie or season's status reads on the card. `started` is whether an approved one's
-/// download has.
-pub(super) const fn status(s: Status, auto_approved: bool, started: bool) -> &'static str {
+/// How a movie or season's status reads on the card. `download` is how far an approved one's
+/// download has got, `None` until Radarr or Sonarr has grabbed a release.
+pub(super) const fn status(
+    s: Status,
+    auto_approved: bool,
+    download: Option<Download>,
+) -> &'static str {
     match s {
         Status::Missing => "Not requested",
         Status::Pending => "Requested, waiting for approval",
-        Status::Processing => match (auto_approved, started) {
-            (true, true) => "Automatically approved, download started",
-            (true, false) => "Automatically approved, download queued",
-            (false, true) => "Approved, download started",
-            (false, false) => "Approved, download queued",
+        Status::Processing => match (auto_approved, download) {
+            (true, None) => "Automatically approved",
+            (true, Some(Download::Queued)) => "Automatically approved, download queued",
+            (true, Some(Download::Started)) => "Automatically approved, download started",
+            (false, None) => "Approved",
+            (false, Some(Download::Queued)) => "Approved, download queued",
+            (false, Some(Download::Started)) => "Approved, download started",
         },
         Status::PartiallyAvailable => "Partly downloaded",
         Status::Available => "Downloaded",
@@ -989,21 +1000,22 @@ mod tests {
 
     #[test]
     fn lines() {
-        let season = |n, s, auto, started| (n, status(s, auto, started), s);
+        let season = |n, s, auto, download| (n, status(s, auto, download), s);
         let seasons = [
-            season(6, Status::Missing, false, false),
-            season(1, Status::Available, false, false),
-            season(2, Status::Available, false, false),
-            season(3, Status::Processing, true, false),
-            season(4, Status::Processing, false, true),
-            season(5, Status::Pending, false, false),
-            season(7, Status::Processing, true, false),
+            season(6, Status::Missing, false, None),
+            season(1, Status::Available, false, None),
+            season(2, Status::Available, false, None),
+            season(3, Status::Processing, true, Some(Download::Queued)),
+            season(4, Status::Processing, false, Some(Download::Started)),
+            season(5, Status::Pending, false, None),
+            season(7, Status::Processing, true, Some(Download::Queued)),
+            season(8, Status::Processing, true, None),
         ];
         assert_eq!(
             season_lines(&seasons),
             "Downloaded: 1\u{2013}2\nAutomatically approved, download queued: 3, 7\n\
-             Approved, download started: 4\nRequested, waiting for approval: 5\n\
-             Not requested: 6"
+             Approved, download started: 4\nAutomatically approved: 8\n\
+             Requested, waiting for approval: 5\nNot requested: 6"
         );
     }
 

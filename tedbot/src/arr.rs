@@ -1,5 +1,7 @@
-//! Radarr and Sonarr API clients. Only the parts the bot uses: whether a request's download has
-//! started, and taking a cancelled request back out while it's still downloading.
+//! Radarr and Sonarr API clients. Only the parts the bot uses: how far a request's download has
+//! got, and taking a cancelled request back out while it's still downloading.
+
+use std::collections::HashMap;
 
 use anyhow::Result;
 use reqwest::Method;
@@ -48,15 +50,27 @@ struct QueueItem {
     #[serde(default)]
     size: f64,
     /// Bytes still to download
-    #[serde(default)]
-    sizeleft: f64,
+    #[serde(default, rename = "sizeleft")]
+    size_left: f64,
+}
+
+/// How far a download in Radarr's or Sonarr's queue has got
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Download {
+    /// A release was grabbed, but none of it has downloaded: it's waiting for the download
+    /// client or for peers
+    Queued,
+    /// Some of it has downloaded
+    Started,
 }
 
 impl QueueItem {
-    /// Whether any of it has downloaded. Releases waiting for the download client or for peers
-    /// haven't.
-    fn started(&self) -> bool {
-        self.size > 0.0 && self.sizeleft < self.size
+    fn download(&self) -> Download {
+        if self.size > 0.0 && self.size_left < self.size {
+            Download::Started
+        } else {
+            Download::Queued
+        }
     }
 }
 
@@ -125,39 +139,53 @@ impl Arr {
         Ok(())
     }
 
-    /// Radarr: whether a download of the movie with TMDB id `tmdb_id` has started
-    pub async fn movie_started(&self, http: &reqwest::Client, tmdb_id: u32) -> Result<bool> {
+    /// Radarr: how far the furthest download of the movie with TMDB id `tmdb_id` has got.
+    /// `None` if nothing's in the queue for it.
+    pub async fn movie_download(
+        &self,
+        http: &reqwest::Client,
+        tmdb_id: u32,
+    ) -> Result<Option<Download>> {
         let movies: Vec<Movie> = self.get(http, &format!("/movie?tmdbId={tmdb_id}")).await?;
+        let mut furthest = None;
         for movie in movies {
             let queue: Vec<QueueItem> = self
                 .get(http, &format!("/queue/details?movieId={}", movie.id))
                 .await?;
-            if queue
+            let download = queue
                 .iter()
-                .any(|q| q.movie_id == Some(movie.id) && q.started())
-            {
-                return Ok(true);
-            }
+                .filter(|q| q.movie_id == Some(movie.id))
+                .map(QueueItem::download)
+                .max();
+            furthest = furthest.max(download);
         }
-        Ok(false)
+        Ok(furthest)
     }
 
-    /// Sonarr: the seasons of the show with TVDB id `tvdb_id` with a download started
-    pub async fn seasons_started(&self, http: &reqwest::Client, tvdb_id: u32) -> Result<Vec<u32>> {
+    /// Sonarr: how far the furthest download of each season of the show with TVDB id `tvdb_id`
+    /// has got, for seasons with anything in the queue
+    pub async fn season_downloads(
+        &self,
+        http: &reqwest::Client,
+        tvdb_id: u32,
+    ) -> Result<HashMap<u32, Download>> {
         let shows: Vec<Value> = self.get(http, &format!("/series?tvdbId={tvdb_id}")).await?;
         let Some(id) = shows.first().and_then(|s| s["id"].as_u64()) else {
-            return Ok(Vec::new());
+            return Ok(HashMap::new());
         };
         let queue: Vec<QueueItem> = self
             .get(http, &format!("/queue/details?seriesId={id}"))
             .await?;
-        let mut seasons: Vec<u32> = queue
+        let mut seasons = HashMap::new();
+        for q in queue
             .iter()
-            .filter(|q| q.series_id.map(u64::from) == Some(id) && q.started())
-            .filter_map(|q| q.season_number)
-            .collect();
-        seasons.sort_unstable();
-        seasons.dedup();
+            .filter(|q| q.series_id.map(u64::from) == Some(id))
+        {
+            if let Some(n) = q.season_number {
+                let furthest = seasons.entry(n).or_insert(Download::Queued);
+                *furthest = (*furthest).max(q.download());
+            }
+        }
         Ok(seasons)
     }
 
@@ -266,12 +294,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn queue_started() {
-        let item = |json: &str| -> QueueItem { serde_json::from_str(json).unwrap() };
-        assert!(item(r#"{"id": 1, "size": 100, "sizeleft": 40}"#).started());
-        assert!(item(r#"{"id": 1, "size": 100, "sizeleft": 0}"#).started());
-        assert!(!item(r#"{"id": 1, "size": 100, "sizeleft": 100}"#).started());
-        assert!(!item(r#"{"id": 1}"#).started());
+    fn queue_download() {
+        let item = |json: &str| serde_json::from_str::<QueueItem>(json).unwrap().download();
+        assert_eq!(
+            item(r#"{"id": 1, "size": 100, "sizeleft": 40}"#),
+            Download::Started
+        );
+        assert_eq!(
+            item(r#"{"id": 1, "size": 100, "sizeleft": 0}"#),
+            Download::Started
+        );
+        assert_eq!(
+            item(r#"{"id": 1, "size": 100, "sizeleft": 100}"#),
+            Download::Queued
+        );
+        assert_eq!(item(r#"{"id": 1}"#), Download::Queued);
     }
 
     #[test]

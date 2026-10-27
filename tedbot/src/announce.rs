@@ -135,7 +135,7 @@ async fn available(
     }
 
     let title = seerr::with_year(&details.title, details.release_date.as_deref());
-    let mut embed = CreateEmbed::new().title(if request.is4k {
+    let mut embed = CreateEmbed::new().title(if request.is_4k {
         format!("{title} (4K)")
     } else {
         title
@@ -150,10 +150,10 @@ async fn available(
         embed = embed.field("Seasons", ranges(&request.season_numbers()), true);
     }
     let info = details.media_info.as_ref();
-    let jellyfin = info.and_then(|m| m.jellyfin_url(request.is4k).map(str::to_owned));
+    let jellyfin = info.and_then(|m| m.jellyfin_url(request.is_4k).map(str::to_owned));
     let moonfin = info
         .filter(|_| data.jellyfin.moonfin)
-        .and_then(|m| m.moonfin_url(request.is4k));
+        .and_then(|m| m.moonfin_url(request.is_4k));
     let links: Vec<CreateButton> = [
         ("Jellyfin", jellyfin),
         ("Moonfin", moonfin),

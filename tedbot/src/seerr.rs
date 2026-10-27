@@ -110,7 +110,7 @@ pub struct Quota {
 #[serde(rename_all = "camelCase")]
 struct Server {
     id: u32,
-    is4k: bool,
+    is_4k: bool,
     is_default: bool,
 }
 
@@ -135,7 +135,7 @@ pub struct Profiles {
     /// Whether it's the server for movies (Radarr) rather than shows (Sonarr)
     pub movies: bool,
     /// Whether it's a 4K server
-    pub is4k: bool,
+    pub is_4k: bool,
     pub list: Vec<Profile>,
 }
 
@@ -310,14 +310,12 @@ pub struct MediaInfo {
     pub status: Status,
     /// The 4K copy's
     #[serde(default)]
-    pub status4k: Status,
+    pub status_4k: Status,
     /// Jellyfin page, once it's available
     pub media_url: Option<String>,
-    #[serde(rename = "mediaUrl4k")]
     pub media_url_4k: Option<String>,
     /// Jellyfin item id, once it's available
     pub jellyfin_media_id: Option<String>,
-    #[serde(rename = "jellyfinMediaId4k")]
     pub jellyfin_media_id_4k: Option<String>,
     /// Per-season status, shows only
     #[serde(default)]
@@ -334,7 +332,7 @@ pub struct SeasonInfo {
     pub status: Status,
     /// The 4K copy's
     #[serde(default)]
-    pub status4k: Status,
+    pub status_4k: Status,
 }
 
 /// A request for a movie or some seasons of a show
@@ -343,7 +341,7 @@ pub struct SeasonInfo {
 pub struct Request {
     pub id: u32,
     pub status: RequestStatus,
-    pub is4k: bool,
+    pub is_4k: bool,
     /// What was requested. Absent when listed under the media itself.
     pub media: Option<RequestMedia>,
     /// When it was made, RFC 3339
@@ -493,8 +491,8 @@ impl From<u8> for RequestStatus {
 
 impl MediaInfo {
     /// The Jellyfin page of the HD or 4K copy
-    pub fn jellyfin_url(&self, is4k: bool) -> Option<&str> {
-        if is4k {
+    pub fn jellyfin_url(&self, is_4k: bool) -> Option<&str> {
+        if is_4k {
             self.media_url_4k.as_deref()
         } else {
             self.media_url.as_deref()
@@ -503,9 +501,9 @@ impl MediaInfo {
 
     /// The HD or 4K copy's page in Moonfin Web, which the Moonfin plugin serves on the Jellyfin
     /// server that [`Self::jellyfin_url`] points to
-    pub fn moonfin_url(&self, is4k: bool) -> Option<String> {
-        let (server, _) = self.jellyfin_url(is4k)?.split_once("/web/")?;
-        let id = if is4k {
+    pub fn moonfin_url(&self, is_4k: bool) -> Option<String> {
+        let (server, _) = self.jellyfin_url(is_4k)?.split_once("/web/")?;
+        let id = if is_4k {
             &self.jellyfin_media_id_4k
         } else {
             &self.jellyfin_media_id
@@ -521,11 +519,11 @@ impl Details {
     }
 
     /// Where the HD or 4K copy of the movie, or the whole show, stands
-    pub fn status_of(&self, is4k: bool) -> Status {
+    pub fn status_of(&self, is_4k: bool) -> Status {
         self.media_info.as_ref().map_or(
             Status::Missing,
             |m| {
-                if is4k { m.status4k } else { m.status }
+                if is_4k { m.status_4k } else { m.status }
             },
         )
     }
@@ -556,16 +554,16 @@ impl Details {
             .map(|r| Cancellable {
                 id: r.id,
                 sent: r.status == RequestStatus::Approved,
-                is4k: r.is4k,
+                is_4k: r.is_4k,
                 seasons: r.seasons.iter().map(|s| s.season_number).collect(),
             })
             .filter(|c| {
                 if self.seasons.is_empty() {
-                    !downloaded(self.status_of(c.is4k))
+                    !downloaded(self.status_of(c.is_4k))
                 } else {
                     !c.seasons
                         .iter()
-                        .any(|&n| downloaded(self.season_status_of(n, c.is4k)))
+                        .any(|&n| downloaded(self.season_status_of(n, c.is_4k)))
                 }
             })
             .collect()
@@ -573,11 +571,11 @@ impl Details {
 
     /// Whether the approved request covering season `n`, or the movie with `None`, was approved
     /// automatically rather than by someone else. `false` if no approved request covers it.
-    pub fn auto_approved(&self, n: Option<u32>, is4k: bool) -> bool {
+    pub fn auto_approved(&self, n: Option<u32>, is_4k: bool) -> bool {
         self.media_info
             .iter()
             .flat_map(|m| &m.requests)
-            .filter(|r| r.is4k == is4k && r.status == RequestStatus::Approved)
+            .filter(|r| r.is_4k == is_4k && r.status == RequestStatus::Approved)
             .find(|r| n.is_none_or(|n| r.seasons.iter().any(|s| s.season_number == n)))
             .is_some_and(Request::automatic)
     }
@@ -586,12 +584,12 @@ impl Details {
     /// HD or 4K as it asked
     pub fn request_status(&self, request: &Request) -> Status {
         if request.seasons.is_empty() {
-            return self.status_of(request.is4k);
+            return self.status_of(request.is_4k);
         }
         let statuses: Vec<Status> = request
             .seasons
             .iter()
-            .map(|s| self.season_status_of(s.season_number, request.is4k))
+            .map(|s| self.season_status_of(s.season_number, request.is_4k))
             .collect();
         if statuses.iter().all(|&s| s == Status::Available) {
             Status::Available
@@ -615,7 +613,7 @@ impl Details {
     }
 
     /// Where the HD or 4K copy of season `n` stands, as [`Self::season_status`]
-    pub fn season_status_of(&self, n: u32, is4k: bool) -> Status {
+    pub fn season_status_of(&self, n: u32, is_4k: bool) -> Status {
         let Some(info) = &self.media_info else {
             return Status::Missing;
         };
@@ -625,7 +623,7 @@ impl Details {
             .find(|s| s.season_number == n)
             .map_or(
                 Status::Missing,
-                |s| if is4k { s.status4k } else { s.status },
+                |s| if is_4k { s.status_4k } else { s.status },
             );
         if own != Status::Missing {
             return own;
@@ -633,7 +631,7 @@ impl Details {
         info.requests
             .iter()
             .filter(|r| {
-                r.is4k == is4k
+                r.is_4k == is_4k
                     && !matches!(r.status, RequestStatus::Declined | RequestStatus::Completed)
             })
             .find(|r| r.seasons.iter().any(|s| s.season_number == n))
@@ -657,7 +655,7 @@ struct NewRequest<'a> {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     ignore_quota: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    is4k: bool,
+    is_4k: bool,
 }
 
 /// What to request beyond the movie or show itself
@@ -670,7 +668,7 @@ pub struct Options<'a> {
     /// Don't count it against the requester's quota
     pub ignore_quota: bool,
     /// Request the 4K copy, which goes to Seerr's default 4K server
-    pub is4k: bool,
+    pub is_4k: bool,
 }
 
 /// Body of a Seerr error
@@ -686,7 +684,7 @@ pub struct Cancellable {
     /// Approved, so it's been sent to Radarr or Sonarr and has to come out of there
     pub sent: bool,
     /// For the 4K copy, which has its own Radarr or Sonarr
-    pub is4k: bool,
+    pub is_4k: bool,
     /// Requested seasons, shows only
     pub seasons: Vec<u32>,
 }
@@ -827,7 +825,7 @@ impl Seerr {
         &self,
         http: &reqwest::Client,
         media: Media,
-        is4k: bool,
+        is_4k: bool,
     ) -> Result<Option<Profiles>> {
         let service = media.service();
         let servers: Vec<Server> = self
@@ -837,7 +835,7 @@ impl Seerr {
             .error_for_status()?
             .json()
             .await?;
-        let Some(server) = servers.iter().find(|s| s.is_default && s.is4k == is4k) else {
+        let Some(server) = servers.iter().find(|s| s.is_default && s.is_4k == is_4k) else {
             return Ok(None);
         };
         let details: ServerDetails = self
@@ -850,7 +848,7 @@ impl Seerr {
         Ok(Some(Profiles {
             server: server.id,
             movies: matches!(media, Media::Movie(_)),
-            is4k,
+            is_4k,
             list: details.profiles,
         }))
     }
@@ -901,7 +899,7 @@ impl Seerr {
             seasons,
             profile_id: options.profile,
             ignore_quota: options.ignore_quota,
-            is4k: options.is4k,
+            is_4k: options.is_4k,
         };
         let response = http
             .post(self.api("/request"))
@@ -1118,6 +1116,20 @@ mod tests {
             Some("https://stream.example.com/Moonfin/Web/item/abc")
         );
         assert_eq!(info.moonfin_url(true), None);
+        let uhd: MediaInfo = serde_json::from_str(
+            r##"{
+                "status": 1,
+                "status4k": 5,
+                "mediaUrl4k": "https://stream.example.com/web/index.html#!/details?id=def",
+                "jellyfinMediaId4k": "def"
+            }"##,
+        )
+        .unwrap();
+        assert_eq!(uhd.status_4k, Status::Available);
+        assert_eq!(
+            uhd.moonfin_url(true).as_deref(),
+            Some("https://stream.example.com/Moonfin/Web/item/def")
+        );
         let missing: MediaInfo = serde_json::from_str(r#"{"status": 3}"#).unwrap();
         assert_eq!(missing.moonfin_url(false), None);
     }
@@ -1131,8 +1143,8 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let request = |is4k| Request {
-            is4k,
+        let request = |is_4k| Request {
+            is_4k,
             ..serde_json::from_str(r#"{"id": 1, "status": 5, "is4k": false}"#).unwrap()
         };
         assert_eq!(movie.request_status(&request(true)), Status::Available);
@@ -1214,19 +1226,19 @@ mod tests {
                 Cancellable {
                     id: 5,
                     sent: true,
-                    is4k: true,
+                    is_4k: true,
                     seasons: vec![1],
                 },
                 Cancellable {
                     id: 2,
                     sent: true,
-                    is4k: false,
+                    is_4k: false,
                     seasons: vec![2],
                 },
                 Cancellable {
                     id: 3,
                     sent: false,
-                    is4k: false,
+                    is_4k: false,
                     seasons: vec![3],
                 },
             ]
