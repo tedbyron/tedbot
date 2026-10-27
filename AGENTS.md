@@ -87,9 +87,9 @@ store):
   versions' status; 4K is only an upgrade there, offered for what's downloaded
   in HD to users with Seerr's Request 4K (or its movie/series variant), with a
   button switching the card's menus and buttons between HD and 4K.
-- Approved but not downloaded reads "download queued" or "download started",
-  by whether Radarr's or Sonarr's queue has any bytes of it (`arr.rs`), checked
-  only for what's approved.
+- Approved but not downloaded reads just "Approved" until Radarr or Sonarr has
+  grabbed a release, then "download queued" until its queue has any bytes of it,
+  then "download started" (`arr.rs`), checked only for what's approved.
 - Seerr counts a season's episodes by TMDB, which can split seasons differently
   from TVDB (Sonarr's), so a finished season can stay "partly downloaded". The
   bot counts it as downloaded when Sonarr has a file for every monitored episode
