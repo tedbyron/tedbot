@@ -86,9 +86,9 @@ store):
   marked "(4K)". Cancelling one takes it out of the 4K Radarr or Sonarr
   (optional `[radarr_4k]`/`[sonarr_4k]` config), and admins pick its quality
   from Seerr's default 4K server's profiles. `/request` cards show both
-  versions' status; 4K is only an upgrade there, offered for what's downloaded
-  in HD to users with Seerr's Request 4K (or its movie/series variant), with a
-  button switching the card's menus and buttons between HD and 4K.
+  versions' status; users with Seerr's Request 4K (or its movie/series variant)
+  can request 4K whether or not the HD version is there, with a button switching
+  the card's menus and buttons between HD and 4K.
 - Approved but not downloaded reads just "Approved" until Radarr or Sonarr has
   grabbed a release, then "download queued" until its queue has any bytes of it,
   then "download started" (`arr.rs`), checked only for what's approved.

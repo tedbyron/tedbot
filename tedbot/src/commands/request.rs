@@ -9,8 +9,8 @@
 //! Users Seerr would show advanced options also get a quality picker, and those who can bypass
 //! their quota get a second button that requests without counting against it.
 //!
-//! Users Seerr lets request 4K can also request a 4K version of what's already downloaded in
-//! HD, with a button switching the card between the two.
+//! Users Seerr lets request 4K can also request a 4K version, with a button switching the card
+//! between HD and 4K when both have something to do.
 
 use std::{collections::HashMap, time::Duration};
 
@@ -337,7 +337,6 @@ impl Card {
             embed = embed.thumbnail(format!("{POSTER_URL}{path}"));
         }
 
-        // 4K is only an upgrade: it can be requested once the HD version is downloaded
         let can_4k = viewer.user.can_request_4k(media) && viewer.server(media, true).is_some();
         let blocked = details.status() == Status::Blocklisted;
         let numbers: Vec<u32> = details.season_numbers().collect();
@@ -380,7 +379,7 @@ impl Card {
                     _ => format!("{hd_label}\n{uhd_label} in 4K"),
                 };
                 embed = embed.field("Status", text, false);
-                let open_4k = can_4k && hd == Status::Available && uhd == Status::Missing;
+                let open_4k = can_4k && !blocked && uhd == Status::Missing;
                 (
                     "Movie",
                     [hd == Status::Missing, open_4k].map(|open| (open, Vec::new())),
@@ -406,9 +405,7 @@ impl Card {
                         .iter()
                         .copied()
                         .filter(|&n| {
-                            status_of(Some(n), is_4k) == Status::Missing
-                                && (!is_4k
-                                    || can_4k && status_of(Some(n), false) == Status::Available)
+                            status_of(Some(n), is_4k) == Status::Missing && (!is_4k || can_4k)
                         })
                         .collect()
                 };
