@@ -172,14 +172,16 @@ store):
   as ephemeral follow-ups. Replies are ephemeral; ephemeral messages can only be
   edited with an interaction token, which expires after 15 minutes, so buttons
   time out after 14 and are removed with the newest token.
-- **`/restart <service>`** (done): only Jellyfin so far. Admins only. Jellyfin's
+- **`/restart <service>`** (done): Jellyfin or tedbot. Admins only. Jellyfin's
   launchd agent is `jellyfin.launchd_label`, by default `org.nixos.jellyfin`.
   `default_member_permissions` hides it from members without Administrator;
   Discord can't hide a command by role from a bot token, so the admin role is
   given access in the server's Integrations settings, and the bot checks
   `is_admin` regardless. Confirms with how many streams it would stop, runs
   `launchctl kickstart -k gui/<uid>/<label>` (the bot is an agent in the same
-  session), then polls Jellyfin's `/health`.
+  session), then polls Jellyfin's `/health`. tedbot shuts its shards down so
+  `main` exits, and its agent's `KeepAlive` (dotfiles' `tedbot.nix`) starts it
+  again; killing itself with `kickstart -k` could take `launchctl` down too.
 - Every command reply is ephemeral (`ephemeral` on each `#[command]`, so
   `ctx.say`/`ctx.send` default to it), as are follow-ups to button presses.
 - **Bot metrics**: expose a Prometheus `/metrics` endpoint from the bot (bound

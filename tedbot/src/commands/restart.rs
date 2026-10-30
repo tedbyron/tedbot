@@ -1,8 +1,9 @@
-//! `/restart`: restarts a service's launchd agent, for admins only. Only Jellyfin so far.
+//! `/restart`: restarts Jellyfin's launchd agent, or the bot itself, for admins only.
 //!
 //! Discord hides it from members without Administrator unless the server's Integrations settings
 //! give the admin role access too; the bot checks the role itself either way. Asks to confirm with
-//! what it would interrupt, then waits for the service's health check to pass again.
+//! what it would interrupt, then waits for Jellyfin's health check to pass again. The bot
+//! restarts by disconnecting and exiting, for its launchd agent's `KeepAlive` to start it again.
 
 use std::time::{Duration, Instant};
 
@@ -32,16 +33,11 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 pub enum Service {
     #[name = "Jellyfin"]
     Jellyfin,
+    #[name = "tedbot"]
+    Tedbot,
 }
 
 impl Service {
-    /// Its launchd agent's label
-    fn label(self, data: &Data) -> &str {
-        match self {
-            Self::Jellyfin => &data.jellyfin.launchd_label,
-        }
-    }
-
     /// What restarting it interrupts, for the confirmation
     async fn interrupts(self, data: &Data) -> String {
         match self {
@@ -56,13 +52,10 @@ impl Service {
                     "Jellyfin isn't answering, so streams can't be counted.".to_owned()
                 }
             },
-        }
-    }
-
-    /// Whether its health check passes
-    async fn healthy(self, data: &Data) -> bool {
-        match self {
-            Self::Jellyfin => data.jellyfin.healthy(&data.http).await,
+            Self::Tedbot => "Buttons on command replies already sent stop working (request \
+                             posts' keep working), and Seerr notifications sent while it's down \
+                             are missed."
+                .to_owned(),
         }
     }
 }
@@ -86,8 +79,6 @@ pub async fn restart(
     ctx.defer_ephemeral().await?;
 
     let data = ctx.data();
-    let label = service.label(data);
-
     let interrupts = service.interrupts(data).await;
     let id = ctx.id();
     let buttons = CreateActionRow::Buttons(vec![
@@ -112,10 +103,10 @@ pub async fn restart(
     };
     let restart = press.data.custom_id.ends_with("-restart");
     let update = CreateInteractionResponseMessage::new()
-        .content(if restart {
-            format!("Restarting {name}\u{2026}")
-        } else {
-            "Not restarted".to_owned()
+        .content(match (restart, service) {
+            (true, Service::Tedbot) => "Restarting, back in a few seconds\u{2026}".to_owned(),
+            (true, Service::Jellyfin) => format!("Restarting {name}\u{2026}"),
+            (false, _) => "Not restarted".to_owned(),
         })
         .components(vec![]);
     press
@@ -124,16 +115,22 @@ pub async fn restart(
     if !restart {
         return Ok(());
     }
+    if matches!(service, Service::Tedbot) {
+        info!("{} restarted the bot", ctx.author().name);
+        // The client then stops and `main` exits
+        ctx.framework().shard_manager().shutdown_all().await;
+        return Ok(());
+    }
 
     let started = Instant::now();
-    let content = if let Err(e) = kickstart(label).await {
+    let content = if let Err(e) = kickstart(&data.jellyfin.launchd_label).await {
         error!("Restarting {name}: {e:#}");
         format!("Couldn't restart {name} \u{1fae4}")
     } else {
         info!("{} restarted {name}", ctx.author().name);
         sleep(POLL_INTERVAL).await;
         loop {
-            if service.healthy(data).await {
+            if data.jellyfin.healthy(&data.http).await {
                 break format!("{name} is back up after {}s", started.elapsed().as_secs());
             }
             if started.elapsed() > START_TIMEOUT {
