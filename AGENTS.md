@@ -181,10 +181,10 @@ store):
   session), then polls Jellyfin's `/health`. tedbot shuts its shards down so
   `main` exits, and its agent's `KeepAlive` (dotfiles' `tedbot.nix`) starts it
   again; killing itself with `kickstart -k` could take `launchctl` down too.
-- **`/refresh-users`** (done): for anyone. Forgets the member lookups and
-  refetches who linked what in Seerr (`Seerr::refresh_links`), so a newly linked
-  account shows as a mention without a restart, and says how many Seerr users
-  have one linked.
+- **`/refresh-users`** (done): admins only, hidden like `/restart`. Forgets the
+  member lookups and refetches who linked what in Seerr
+  (`Seerr::refresh_links`), so a newly linked account shows as a mention without
+  a restart, and says how many Seerr users have one linked.
 - Every command reply is ephemeral (`ephemeral` on each `#[command]`, so
   `ctx.say`/`ctx.send` default to it), as are follow-ups to button presses.
 - **Bot metrics**: expose a Prometheus `/metrics` endpoint from the bot (bound

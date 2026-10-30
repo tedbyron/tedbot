@@ -1,16 +1,27 @@
 //! `/refresh-users`: looks up again which Discord account each Seerr user linked, and whether
 //! they're in each server, so someone who just linked shows as a mention without restarting
-//! the bot.
+//! the bot. Admins only; like `/restart`, Discord hides it from members without Administrator
+//! unless the server's Integrations settings give admins access.
 
 use anyhow::Result;
 use poise::command;
 use tracing::{info, warn};
 
+use super::is_admin;
 use crate::Context;
 
 /// Find Discord accounts newly linked in Seerr
-#[command(slash_command, rename = "refresh-users", ephemeral)]
+#[command(
+    slash_command,
+    rename = "refresh-users",
+    ephemeral,
+    default_member_permissions = "ADMINISTRATOR"
+)]
 pub async fn refresh_users(ctx: Context<'_>) -> Result<()> {
+    if !is_admin(ctx) {
+        ctx.say("Only admins can refresh users").await?;
+        return Ok(());
+    }
     ctx.defer_ephemeral().await?;
     let data = ctx.data();
     data.members.clear();
