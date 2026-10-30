@@ -834,20 +834,36 @@ impl Seerr {
             .as_ref()
             .is_some_and(|(at, _)| at.elapsed() < LINKS_TTL)
         {
-            let mut fetched = HashMap::new();
-            for user in self.users(http).await? {
-                if let Some(id) = self.discord_id(http, user.id).await? {
-                    fetched.entry(id).or_insert(Requester {
-                        id: user.id,
-                        permissions: user.permissions,
-                    });
-                }
-            }
-            *links = Some((Instant::now(), fetched));
+            *links = Some((Instant::now(), self.fetch_links(http).await?));
         }
         Ok(links
             .as_ref()
             .and_then(|(_, linked)| linked.get(&discord).copied()))
+    }
+
+    /// Fetches who linked what now, whatever its age, returning how many Seerr users linked a
+    /// Discord account
+    pub async fn refresh_links(&self, http: &reqwest::Client) -> Result<usize> {
+        let mut links = self.links.0.lock().await;
+        let fetched = self.fetch_links(http).await?;
+        let count = fetched.len();
+        *links = Some((Instant::now(), fetched));
+        drop(links);
+        Ok(count)
+    }
+
+    /// Seerr users by the Discord account they linked
+    async fn fetch_links(&self, http: &reqwest::Client) -> Result<HashMap<UserId, Requester>> {
+        let mut fetched = HashMap::new();
+        for user in self.users(http).await? {
+            if let Some(id) = self.discord_id(http, user.id).await? {
+                fetched.entry(id).or_insert(Requester {
+                    id: user.id,
+                    permissions: user.permissions,
+                });
+            }
+        }
+        Ok(fetched)
     }
 
     /// How many requests Seerr user `id` has left

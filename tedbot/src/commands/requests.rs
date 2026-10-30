@@ -338,6 +338,11 @@ impl Members {
     fn cell(&self, guild: GuildId, id: u32) -> Member {
         Arc::clone(self.0.lock().unwrap().entry((guild, id)).or_default())
     }
+
+    /// Forgets every lookup, so the next ones see accounts linked or servers joined since
+    pub fn clear(&self) {
+        self.0.lock().unwrap().clear();
+    }
 }
 
 impl Viewer {

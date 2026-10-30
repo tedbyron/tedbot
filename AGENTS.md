@@ -139,19 +139,19 @@ store):
   status, seasons, when, and for admins who requested and approved it and the
   quality), with ◀ ▶ through the list. Seerr users show as a mention when their
   `discordIds` account is in the server, like `/streams`, else by Seerr name
-  (`requests::Members`, shared with request posts, kept until the bot restarts:
-  Discord allows 5 member lookups a second). The card offers Cancel request on
-  the same terms as `/request` (shared code), and for admins on pending requests
-  Approve, Decline, and season and quality menus that edit the request straight
-  away (`PUT /request/{id}`, which Seerr only allows while pending and which
-  resets every field it's not sent, so the rest are sent back as they were).
-  Pending cards also get "Approve all N" when the same requester has other
-  pending requests each made within an hour of the one before; it asks to
-  confirm with the titles listed, then approves them one at a time and lists any
-  that failed. Quality is only editable when the request goes to the default
-  server, whose profiles are the ones the bot knows. Seerr is asked as its
-  admin, so the bot checks `is_admin` itself. Request lists carry no titles, so
-  each row's details are fetched.
+  (`requests::Members`, shared with request posts, kept until the bot restarts
+  or `/refresh-users`: Discord allows 5 member lookups a second). The card
+  offers Cancel request on the same terms as `/request` (shared code), and for
+  admins on pending requests Approve, Decline, and season and quality menus that
+  edit the request straight away (`PUT /request/{id}`, which Seerr only allows
+  while pending and which resets every field it's not sent, so the rest are sent
+  back as they were). Pending cards also get "Approve all N" when the same
+  requester has other pending requests each made within an hour of the one
+  before; it asks to confirm with the titles listed, then approves them one at a
+  time and lists any that failed. Quality is only editable when the request goes
+  to the default server, whose profiles are the ones the bot knows. Seerr is
+  asked as its admin, so the bot checks `is_admin` itself. Request lists carry
+  no titles, so each row's details are fetched.
 - **`/streams`** (done): ephemeral, since views differ. Everyone gets the stream
   count, upload in use and who's watching. Admins also get what each stream is
   playing, direct play or transcode, and LAN bitrate. Bitrates count unpaused
@@ -181,6 +181,10 @@ store):
   session), then polls Jellyfin's `/health`. tedbot shuts its shards down so
   `main` exits, and its agent's `KeepAlive` (dotfiles' `tedbot.nix`) starts it
   again; killing itself with `kickstart -k` could take `launchctl` down too.
+- **`/refresh-users`** (done): for anyone. Forgets the member lookups and
+  refetches who linked what in Seerr (`Seerr::refresh_links`), so a newly linked
+  account shows as a mention without a restart, and says how many Seerr users
+  have one linked.
 - Every command reply is ephemeral (`ephemeral` on each `#[command]`, so
   `ctx.say`/`ctx.send` default to it), as are follow-ups to button presses.
 - **Bot metrics**: expose a Prometheus `/metrics` endpoint from the bot (bound

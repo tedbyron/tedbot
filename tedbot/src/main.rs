@@ -100,6 +100,7 @@ async fn run() -> Result<()> {
 
     let options = FrameworkOptions {
         commands: vec![
+            commands::refresh_users::refresh_users(),
             commands::request::request(),
             commands::requests::requests(),
             commands::restart::restart(),
