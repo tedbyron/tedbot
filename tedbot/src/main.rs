@@ -91,17 +91,14 @@ async fn run() -> Result<()> {
         )
         .init();
 
-    let mut commands = vec![
-        commands::request::request(),
-        commands::requests::requests(),
-        commands::streams::streams(),
-        commands::tv::tv(),
-    ];
-    if cfg.jellyfin.launchd_label.is_some() {
-        commands.push(commands::restart::restart());
-    }
     let options = FrameworkOptions {
-        commands,
+        commands: vec![
+            commands::request::request(),
+            commands::requests::requests(),
+            commands::restart::restart(),
+            commands::streams::streams(),
+            commands::tv::tv(),
+        ],
         on_error: |e| Box::pin(on_error(e)),
         pre_command: |ctx| Box::pin(pre_command(ctx)),
         command_check: Some(|ctx| Box::pin(command_check(ctx))),

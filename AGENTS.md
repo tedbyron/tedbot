@@ -171,12 +171,12 @@ store):
   as ephemeral follow-ups. Replies are ephemeral; ephemeral messages can only be
   edited with an interaction token, which expires after 15 minutes, so buttons
   time out after 14 and are removed with the newest token.
-- **`/restart <service>`** (done): only Jellyfin so far. Admins only, and only
-  registered when `jellyfin.launchd_label` is set. `default_member_permissions`
-  hides it from members without Administrator; Discord can't hide a command by
-  role from a bot token, so the admin role is given access in the server's
-  Integrations settings, and the bot checks `is_admin` regardless. Confirms with
-  how many streams it would stop, runs
+- **`/restart <service>`** (done): only Jellyfin so far. Admins only. Jellyfin's
+  launchd agent is `jellyfin.launchd_label`, by default `org.nixos.jellyfin`.
+  `default_member_permissions` hides it from members without Administrator;
+  Discord can't hide a command by role from a bot token, so the admin role is
+  given access in the server's Integrations settings, and the bot checks
+  `is_admin` regardless. Confirms with how many streams it would stop, runs
   `launchctl kickstart -k gui/<uid>/<label>` (the bot is an agent in the same
   session), then polls Jellyfin's `/health`.
 - Every command reply is ephemeral (`ephemeral` on each `#[command]`, so

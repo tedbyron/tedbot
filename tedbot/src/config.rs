@@ -81,13 +81,18 @@ pub struct JellyfinConfig {
     /// Whether Jellyfin has the Moonfin plugin, so "now available" posts link to Moonfin Web too
     #[serde(default)]
     pub moonfin: bool,
-    /// Optional label of Jellyfin's launchd agent in the bot's own session, e.g.
-    /// `org.nixos.jellyfin`. Without it there's no `/restart`.
-    pub launchd_label: Option<String>,
+    /// Label of Jellyfin's launchd agent in the bot's own session, for `/restart`. Defaults to
+    /// `org.nixos.jellyfin`.
+    #[serde(default = "default_jellyfin_launchd_label")]
+    pub launchd_label: String,
 }
 
 fn default_jellyfin_url() -> String {
     "http://localhost:8096".into()
+}
+
+fn default_jellyfin_launchd_label() -> String {
+    "org.nixos.jellyfin".into()
 }
 
 /// Seerr connection info

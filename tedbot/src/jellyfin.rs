@@ -16,8 +16,8 @@ pub struct Jellyfin {
     pub api_key: String,
     /// Whether it has the Moonfin plugin
     pub moonfin: bool,
-    /// Its launchd agent's label, if `/restart` may restart it
-    pub launchd_label: Option<String>,
+    /// Its launchd agent's label, for `/restart`
+    pub launchd_label: String,
 }
 
 /// Response of `GET /Items`. Only the fields we read are deserialized.

@@ -35,10 +35,10 @@ pub enum Service {
 }
 
 impl Service {
-    /// Its launchd agent's label, if it's configured
-    fn label(self, data: &Data) -> Option<&str> {
+    /// Its launchd agent's label
+    fn label(self, data: &Data) -> &str {
         match self {
-            Self::Jellyfin => data.jellyfin.launchd_label.as_deref(),
+            Self::Jellyfin => &data.jellyfin.launchd_label,
         }
     }
 
@@ -83,13 +83,10 @@ pub async fn restart(
         ctx.say("Only admins can restart services").await?;
         return Ok(());
     }
-    let data = ctx.data();
-    let Some(label) = service.label(data) else {
-        ctx.say(format!("{name} isn't set up to be restarted from here"))
-            .await?;
-        return Ok(());
-    };
     ctx.defer_ephemeral().await?;
+
+    let data = ctx.data();
+    let label = service.label(data);
 
     let interrupts = service.interrupts(data).await;
     let id = ctx.id();
