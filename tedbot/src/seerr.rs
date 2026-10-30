@@ -58,8 +58,6 @@ struct User {
 const MANAGE_REQUESTS: u32 = 16;
 /// Seerr's `ADMIN` permission, which implies every other
 const ADMIN: u32 = 2;
-/// Seerr's `REQUEST_ADVANCED` permission, for picking a quality profile
-const REQUEST_ADVANCED: u32 = 8192;
 /// Seerr's `REQUEST_4K` permission, for 4K movies and shows
 const REQUEST_4K: u32 = 1024;
 /// Seerr's `REQUEST_4K_MOVIE` permission
@@ -84,12 +82,6 @@ impl Requester {
     /// Whether Seerr lets them skip their quota
     pub const fn can_bypass_quota(self) -> bool {
         self.has_any(MANAGE_REQUESTS)
-    }
-
-    /// Whether Seerr's request page offers them a quality profile. Seerr doesn't check this
-    /// itself, so it's up to the bot.
-    pub const fn can_pick_profile(self) -> bool {
-        self.has_any(MANAGE_REQUESTS | REQUEST_ADVANCED)
     }
 
     /// Whether Seerr lets them request `media` in 4K
@@ -1372,12 +1364,10 @@ mod tests {
         let user = |permissions| Requester { id: 1, permissions };
         // tb: MANAGE_REQUESTS, REQUEST_ADVANCED and others
         assert!(user(336_617_648).can_bypass_quota());
-        assert!(user(336_617_648).can_pick_profile());
         // REQUEST and views only
         assert!(!user(69_222_432).can_bypass_quota());
-        assert!(!user(69_222_432).can_pick_profile());
-        assert!(user(REQUEST_ADVANCED).can_pick_profile());
-        assert!(!user(REQUEST_ADVANCED).can_bypass_quota());
+        // REQUEST_ADVANCED
+        assert!(!user(8192).can_bypass_quota());
         assert!(user(ADMIN).can_bypass_quota());
         assert!(user(REQUEST_4K_TV).can_request_4k(Media::Tv(1)));
         assert!(!user(REQUEST_4K_TV).can_request_4k(Media::Movie(1)));

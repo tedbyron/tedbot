@@ -6,11 +6,8 @@
 //!
 //! Requests are made as the Seerr user who put the invoker's Discord id in their notification
 //! settings, so Seerr's permissions, quotas and auto-approval apply as if they'd used the site.
-//! Users Seerr would show advanced options also get a quality picker, and those who can bypass
-//! their quota get a second button that requests without counting against it.
-//!
-//! Users Seerr lets request 4K can also request a 4K version, with a button switching the card
-//! between HD and 4K when both have something to do.
+//! Users who can bypass their quota get a second button that requests without counting against
+//! it, and users Seerr lets request 4K also get Request 4K buttons. Seerr picks the quality.
 
 use std::{collections::HashMap, time::Duration};
 
@@ -32,8 +29,8 @@ use crate::{
     Context, Data,
     arr::{Arr, Download, Removed},
     seerr::{
-        self, Cancellable, Changed, Details, Media, Profile, Profiles, Quotas, Request,
-        RequestStatus, Requested, Requester, SearchResult, Status,
+        self, Cancellable, Changed, Details, Media, Profiles, Quotas, Request, RequestStatus,
+        Requested, Requester, SearchResult, Status,
     },
 };
 
@@ -71,7 +68,7 @@ pub async fn request(
 
     let id = ctx.id().to_string();
     let mut viewer = Viewer::load(data, user, is_admin(ctx).await).await;
-    let mut card = Card::build(data, &results, 0, &viewer, false).await?;
+    let mut card = Card::build(data, &results, 0, &viewer).await?;
     let reply = CreateReply::default()
         .components(card.components(&id))
         .embed(std::mem::take(&mut card.embed));
@@ -84,24 +81,35 @@ pub async fn request(
         .timeout(NAV_TIMEOUT)
         .await
     {
-        // `bypass` is whether to skip the quota, for request buttons only
-        let (index, action) = match press.data.custom_id.strip_prefix(id.as_str()) {
+        let suffix = press.data.custom_id.strip_prefix(id.as_str());
+        // Buttons and menus for the 4K version end in "-4k"
+        let (suffix, is_4k) = suffix
+            .and_then(|s| s.strip_suffix("-4k"))
+            .map_or((suffix, false), |s| (Some(s), true));
+        let (index, action) = match suffix {
             Some("-next") => (card.index + 1, None),
             Some("-prev") => (card.index + results.len() - 1, None),
-            Some("-request") => (card.index, Some(Action::Request { bypass: false })),
-            Some("-request-bypass") => (card.index, Some(Action::Request { bypass: true })),
-            Some(choice @ ("-seasons" | "-quality" | "-switch")) => {
-                // Only the menus and buttons change, so answer with them straight away
+            Some("-request") => (
+                card.index,
+                Some(Action::Request {
+                    is_4k,
+                    bypass: false,
+                }),
+            ),
+            Some("-request-bypass") => (
+                card.index,
+                Some(Action::Request {
+                    is_4k,
+                    bypass: true,
+                }),
+            ),
+            Some("-seasons") => {
+                // Only the menu and buttons change, so answer with them straight away
                 let values = match &press.data.kind {
                     ComponentInteractionDataKind::StringSelect { values } => values.as_slice(),
                     _ => &[],
                 };
-                let numbers = values.iter().filter_map(|v| v.parse().ok());
-                match choice {
-                    "-seasons" => card.picked = numbers.collect(),
-                    "-quality" => card.profile = numbers.into_iter().next(),
-                    _ => card.switch(),
-                }
+                card.picked = values.iter().filter_map(|v| v.parse().ok()).collect();
                 let update =
                     CreateInteractionResponseMessage::new().components(card.components(&id));
                 press
@@ -110,7 +118,7 @@ pub async fn request(
                 last = Some(press.token);
                 continue;
             }
-            Some("-cancel") => (card.index, Some(Action::Cancel)),
+            Some("-cancel") => (card.index, Some(Action::Cancel { is_4k })),
             _ => continue,
         };
 
@@ -123,9 +131,11 @@ pub async fn request(
         last = Some(token.clone());
 
         let done = match action {
-            Some(Action::Request { bypass }) => Some(card.request(data, user.id, bypass).await),
-            Some(Action::Cancel) => {
-                let (notice, changed) = card.cancel(data).await;
+            Some(Action::Request { is_4k, bypass }) => {
+                Some(card.request(data, user.id, is_4k, bypass).await)
+            }
+            Some(Action::Cancel { is_4k }) => {
+                let (notice, changed) = card.cancel(data, is_4k).await;
                 Some((Some(notice), changed))
             }
             None => None,
@@ -135,9 +145,7 @@ pub async fn request(
             viewer.quotas = Viewer::quotas(data, user).await;
         }
         let mut notice = done.and_then(|(notice, _)| notice);
-        // The same result stays on the version it was on
-        let is_4k = index == card.index && card.is_4k;
-        match Card::build(data, &results, index, &viewer, is_4k).await {
+        match Card::build(data, &results, index, &viewer).await {
             Ok(next) => {
                 card = next;
                 EditInteractionResponse::new()
@@ -207,13 +215,13 @@ async fn results(data: &Data, title: &str) -> Result<Vec<Media>> {
     Ok(results.iter().filter_map(SearchResult::media).collect())
 }
 
-/// What a button press changes in Seerr
+/// What a button press changes in Seerr, for the HD or 4K version
 #[derive(Clone, Copy)]
 enum Action {
     /// Request the movie or picked seasons, skipping the quota if `bypass`
-    Request { bypass: bool },
-    /// Cancel the requests on the card the invoker may cancel
-    Cancel,
+    Request { is_4k: bool, bypass: bool },
+    /// Cancel the version's requests the invoker may cancel
+    Cancel { is_4k: bool },
 }
 
 /// Who's looking, and what Seerr lets them do. Everything past the user is best effort: if it
@@ -225,8 +233,8 @@ struct Viewer {
     admin: bool,
     /// The user's quotas
     quotas: Option<Quotas>,
-    /// The default HD and 4K servers' quality profiles. A server missing here can't be
-    /// requested from.
+    /// The default HD and 4K servers' quality profiles, only to know which servers there are. A
+    /// server missing here can't be requested from.
     profiles: Vec<Profiles>,
 }
 
@@ -267,18 +275,9 @@ struct Version {
     requestable: bool,
     /// Seasons that can be requested, shows only
     open: Vec<u32>,
-    /// Quality profiles to pick from, empty if the invoker may not
-    profiles: Vec<Profile>,
     /// Requests the invoker may cancel. Ones already sent to Radarr or Sonarr are left out if
     /// the bot can't reach it.
     cancellable: Vec<Cancellable>,
-}
-
-impl Version {
-    /// Whether there's anything to do with it
-    const fn active(&self) -> bool {
-        self.requestable || !self.cancellable.is_empty()
-    }
 }
 
 /// One rendered result, plus what the buttons need
@@ -294,30 +293,20 @@ struct Card {
     count: usize,
     /// The HD and 4K versions
     versions: [Version; 2],
-    /// Which version the menus and buttons are for
-    is_4k: bool,
-    /// Seasons picked in the menu. Empty means all of the version's open seasons.
+    /// Seasons picked in the menu. Empty means all of each version's open seasons.
     picked: Vec<u32>,
-    /// Profile picked in the menu, `None` for Seerr's default
-    profile: Option<u32>,
     /// Whether the invoker has a quota for this kind of media and may bypass it
     can_bypass: bool,
     /// TVDB id, shows only, once Seerr knows of it
     tvdb_id: Option<u32>,
-    /// Jellyfin page, the HD version's if there's one, once it's available
-    watch: Option<String>,
+    /// Jellyfin, Moonfin and Seerr links, once it's at least partly available. Jellyfin and
+    /// Moonfin go to the HD copy if there's one.
+    links: Vec<CreateButton>,
 }
 
 impl Card {
-    /// Fetches result `index` (wrapping around) from Seerr and renders it, for the 4K version
-    /// if `is_4k` and there's anything to do with it
-    async fn build(
-        data: &Data,
-        results: &[Media],
-        index: usize,
-        viewer: &Viewer,
-        is_4k: bool,
-    ) -> Result<Self> {
+    /// Fetches result `index` (wrapping around) from Seerr and renders it
+    async fn build(data: &Data, results: &[Media], index: usize, viewer: &Viewer) -> Result<Self> {
         let index = index % results.len();
         let media = results[index];
         let mut details = data.seerr.details(&data.http, media).await?;
@@ -420,7 +409,6 @@ impl Card {
             }
         };
 
-        let can_pick = viewer.user.can_pick_profile();
         let cancellable = details.cancellable(Some(viewer.user.id), viewer.admin);
         let versions = open.map(|(requestable, open)| Version {
             requestable,
@@ -429,11 +417,6 @@ impl Card {
         });
         let [hd, uhd] = versions;
         let versions = [(hd, false), (uhd, true)].map(|(version, is_4k)| Version {
-            profiles: viewer
-                .server(media, is_4k)
-                .filter(|_| can_pick)
-                .map(|p| p.list.clone())
-                .unwrap_or_default(),
             cancellable: cancellable
                 .iter()
                 .filter(|c| c.is_4k == is_4k && (can_unsend(data, media, is_4k) || !c.sent))
@@ -465,16 +448,23 @@ impl Card {
             embed = embed.footer(CreateEmbedFooter::new(footer.join("\n")));
         }
 
-        let is_4k = if versions[usize::from(is_4k)].active() {
-            is_4k
-        } else {
-            !versions[0].active() && versions[1].active()
-        };
-        let watch = details
+        let links = details
             .media_info
             .as_ref()
-            .and_then(|m| m.jellyfin_url(false).or_else(|| m.jellyfin_url(true)))
-            .map(str::to_owned);
+            .and_then(|m| {
+                let is_4k = m.jellyfin_url(false).is_none();
+                let jellyfin = m.jellyfin_url(is_4k)?.to_owned();
+                let moonfin = m.moonfin_url(is_4k).filter(|_| data.jellyfin.moonfin);
+                Some([
+                    ("Jellyfin", Some(jellyfin)),
+                    ("Moonfin", moonfin),
+                    ("Seerr", data.seerr.page(media)),
+                ])
+            })
+            .into_iter()
+            .flatten()
+            .filter_map(|(label, url)| Some(CreateButton::new_link(url?).label(label)))
+            .collect();
         Ok(Self {
             embed,
             media,
@@ -482,45 +472,51 @@ impl Card {
             index,
             count: results.len(),
             versions,
-            is_4k,
             picked: Vec::new(),
-            profile: None,
             can_bypass: limited && viewer.user.can_bypass_quota(),
             tvdb_id,
-            watch,
+            links,
         })
     }
 
-    /// The version the menus and buttons are for
-    const fn version(&self) -> &Version {
-        &self.versions[self.is_4k as usize]
-    }
-
-    /// The seasons a request would ask for: the picked ones, or all open ones
-    fn seasons(&self) -> &[u32] {
+    /// The seasons a request for the HD or 4K version would ask for: the picked ones it has
+    /// open, or all its open ones
+    fn seasons(&self, is_4k: bool) -> Vec<u32> {
+        let open = &self.versions[usize::from(is_4k)].open;
         if self.picked.is_empty() {
-            &self.version().open
+            open.clone()
         } else {
-            &self.picked
+            self.picked
+                .iter()
+                .copied()
+                .filter(|n| open.contains(n))
+                .collect()
         }
     }
 
-    /// Switches the menus and buttons to the other version, clearing what was picked
-    fn switch(&mut self) {
-        self.is_4k = !self.is_4k;
-        self.picked.clear();
-        self.profile = None;
+    /// Whether the HD or 4K version can be requested with what's picked
+    fn requestable(&self, is_4k: bool) -> bool {
+        self.versions[usize::from(is_4k)].requestable
+            && (matches!(self.media, Media::Movie(_)) || !self.seasons(is_4k).is_empty())
     }
 
-    /// Requests the movie, or the picked seasons, as Seerr user `user` with the picked quality,
-    /// skipping their quota if `bypass` and they may. Returns what to tell the invoker, if
-    /// anything (a request made shows on the card), and whether the request was made.
-    async fn request(&self, data: &Data, user: u32, bypass: bool) -> (Option<String>, bool) {
+    /// Requests the HD or 4K version of the movie, or of the picked seasons, as Seerr user
+    /// `user`, skipping their quota if `bypass` and they may. Returns
+    /// what to tell the invoker, if anything (a request made shows on the card), and whether
+    /// the request was made.
+    async fn request(
+        &self,
+        data: &Data,
+        user: u32,
+        is_4k: bool,
+        bypass: bool,
+    ) -> (Option<String>, bool) {
+        let seasons = self.seasons(is_4k);
         let options = seerr::Options {
-            seasons: self.seasons(),
-            profile: self.profile,
+            seasons: &seasons,
+            profile: None,
             ignore_quota: self.can_bypass && bypass,
-            is_4k: self.is_4k,
+            is_4k,
         };
         match data
             .seerr
@@ -536,30 +532,36 @@ impl Card {
         }
     }
 
-    /// Cancels the version's cancellable requests, returning what to tell the invoker and
-    /// whether anything changed
-    async fn cancel(&self, data: &Data) -> (String, bool) {
+    /// Cancels the HD or 4K version's cancellable requests, returning what to tell the invoker
+    /// and whether anything changed
+    async fn cancel(&self, data: &Data, is_4k: bool) -> (String, bool) {
         cancel(
             data,
             self.media,
             self.tvdb_id,
             &self.title,
-            &self.version().cancellable,
+            &self.versions[usize::from(is_4k)].cancellable,
         )
         .await
     }
 
-    /// The season menu for shows with more than one open season and the quality menu, then
-    /// ◀ Request, Request bypassing the quota, Cancel request, Switch to 4K or HD, ▶ and a link
-    /// to Jellyfin once it's there
+    /// The season menu for shows with more than one open season, then rows of Request, Request 4K and their cancel buttons, the same bypassing
+    /// the quota, links once it's available, and ◀ ▶
     fn components(&self, id: &str) -> Vec<CreateActionRow> {
         let button = |suffix: &str| CreateButton::new(format!("{id}-{suffix}"));
-        let version = self.version();
         let mut rows = Vec::new();
 
-        if version.requestable && version.open.len() > 1 {
-            let options = version
-                .open
+        // Seasons open in either version
+        let mut open: Vec<u32> = self
+            .versions
+            .iter()
+            .filter(|v| v.requestable)
+            .flat_map(|v| v.open.iter().copied())
+            .collect();
+        open.sort_unstable();
+        open.dedup();
+        if open.len() > 1 {
+            let options = open
                 .iter()
                 .take(MAX_OPTIONS)
                 .map(|&n| {
@@ -580,97 +582,72 @@ impl Card {
             ));
         }
 
-        if version.requestable && !version.profiles.is_empty() {
-            let options = version
-                .profiles
-                .iter()
-                .take(MAX_OPTIONS)
-                .map(|p| {
-                    CreateSelectMenuOption::new(&p.name, p.id.to_string())
-                        .default_selection(self.profile == Some(p.id))
-                })
-                .collect();
-            rows.push(CreateActionRow::SelectMenu(
-                CreateSelectMenu::new(
-                    format!("{id}-quality"),
-                    CreateSelectMenuKind::String { options },
-                )
-                .placeholder("Default quality")
-                .min_values(0)
-                .max_values(1),
-            ));
+        // One row each, top to bottom, so they stay readable on phones: requesting and
+        // cancelling, requesting past the quota, links, then ◀ ▶
+        let versions = [false, true];
+        let mut request = Vec::new();
+        for (version, is_4k) in self.versions.iter().zip(versions) {
+            if self.requestable(is_4k) {
+                let suffix = if is_4k { "request-4k" } else { "request" };
+                request.push(
+                    button(suffix)
+                        .label(self.request_label(is_4k))
+                        .style(ButtonStyle::Primary),
+                );
+            }
+            if !version.cancellable.is_empty() {
+                let (suffix, label) = if is_4k {
+                    ("cancel-4k", "Cancel 4K request")
+                } else {
+                    ("cancel", "Cancel request")
+                };
+                request.push(button(suffix).label(label).style(ButtonStyle::Danger));
+            }
         }
-
-        let mut buttons = Vec::new();
+        let mut bypass = Vec::new();
+        for is_4k in versions.into_iter().filter(|_| self.can_bypass) {
+            if self.requestable(is_4k) {
+                let (suffix, label) = if is_4k {
+                    ("request-bypass-4k", "Request 4K and bypass quota")
+                } else {
+                    ("request-bypass", "Request and bypass quota")
+                };
+                bypass.push(button(suffix).label(label).style(ButtonStyle::Secondary));
+            }
+        }
+        let mut nav = Vec::new();
         if self.count > 1 {
-            buttons.push(
+            nav.push(
                 button("prev")
                     .emoji('\u{25c0}')
                     .style(ButtonStyle::Secondary),
             );
-        }
-        if version.requestable {
-            buttons.push(
-                button("request")
-                    .label(self.request_label())
-                    .style(ButtonStyle::Primary),
-            );
-        }
-        if version.requestable && self.can_bypass {
-            buttons.push(
-                button("request-bypass")
-                    .label("Request and bypass quota")
-                    .style(ButtonStyle::Secondary),
-            );
-        }
-        if !version.cancellable.is_empty() {
-            let label = if self.is_4k {
-                "Cancel 4K request"
-            } else {
-                "Cancel request"
-            };
-            buttons.push(button("cancel").label(label).style(ButtonStyle::Danger));
-        }
-        if self.versions.iter().all(Version::active) {
-            let label = if self.is_4k {
-                "Switch to HD"
-            } else {
-                "Switch to 4K"
-            };
-            buttons.push(button("switch").label(label).style(ButtonStyle::Secondary));
-        }
-        if self.count > 1 {
-            buttons.push(
+            nav.push(
                 button("next")
                     .emoji('\u{25b6}')
                     .style(ButtonStyle::Secondary),
             );
         }
-        if let Some(url) = &self.watch {
-            buttons.push(CreateButton::new_link(url).label("Jellyfin"));
-        }
-        // Discord allows at most 5 buttons per row
+        // At most 4 buttons each, under Discord's 5, and with the season menu at most 5 rows,
+        // Discord's limit
         rows.extend(
-            buttons
-                .chunks(5)
-                .map(|row| CreateActionRow::Buttons(row.to_vec())),
+            [request, bypass, self.links.clone(), nav]
+                .into_iter()
+                .filter(|row| !row.is_empty())
+                .map(CreateActionRow::Buttons),
         );
         rows
     }
 
-    /// "Request", "Request season 2", "Request 3 seasons" or "Request all seasons", with " in 4K"
-    /// for the 4K version
-    fn request_label(&self) -> String {
-        let label = match (self.media, self.seasons()) {
-            (Media::Movie(_), _) => "Request".into(),
-            (_, [n]) => format!("Request season {n}"),
-            _ if self.picked.is_empty() => "Request all seasons".into(),
-            (_, many) => format!("Request {} seasons", many.len()),
-        };
-        if self.is_4k {
-            format!("{label} in 4K")
-        } else {
-            label
+    /// "Request", "Request season 2", "Request 3 seasons" or "Request all seasons" for the HD
+    /// version, "Request 4K", "Request 4K season 2" and so on for the 4K one
+    fn request_label(&self, is_4k: bool) -> String {
+        let request = if is_4k { "Request 4K" } else { "Request" };
+        match (self.media, self.seasons(is_4k).as_slice()) {
+            (Media::Movie(_), _) => request.into(),
+            (_, [n]) => format!("{request} season {n}"),
+            _ if self.picked.is_empty() => format!("{request} all seasons"),
+            (_, many) => format!("{request} {} seasons", many.len()),
         }
     }
 }
