@@ -45,6 +45,8 @@ pub struct Data {
     sonarr_4k: Option<arr::Arr>,
     /// Members with this role count as admins
     admin_role: Option<serenity::RoleId>,
+    /// Seerr users' Discord accounts in each server, as looked up lately
+    members: commands::requests::Members,
 }
 /// How long an HTTP request may take to connect, to Discord or upstream services
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -160,6 +162,7 @@ async fn run() -> Result<()> {
             api_key: c.api_key,
         }),
         admin_role,
+        members: commands::requests::Members::default(),
     };
     let framework = Framework::builder()
         .setup(move |ctx, ready, framework| {

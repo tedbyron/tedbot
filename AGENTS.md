@@ -140,7 +140,8 @@ store):
   status, seasons, when, and for admins who requested and approved it and the
   quality), with ◀ ▶ through the list. Seerr users show as a mention when their
   `discordIds` account is in the server, like `/streams`, else by Seerr name
-  (looked up once per user per invocation). The card offers Cancel request on
+  (`requests::Members`, shared with request posts, kept until the bot restarts:
+  Discord allows 5 member lookups a second). The card offers Cancel request on
   the same terms as `/request` (shared code), and for admins on pending requests
   Approve, Decline, and season and quality menus that edit the request straight
   away (`PUT /request/{id}`, which Seerr only allows while pending and which

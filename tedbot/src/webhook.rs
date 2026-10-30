@@ -470,6 +470,7 @@ mod tests {
         );
     }
     use crate::{
+        commands::requests::Members,
         ersatztv::GuideCache,
         jellyfin::Jellyfin,
         seerr::{Links, Seerr},
@@ -551,6 +552,7 @@ mod tests {
             radarr_4k: None,
             sonarr_4k: None,
             admin_role: None,
+            members: Members::default(),
         };
         listener.spawn(Arc::new(Http::new("")), Arc::new(data));
 

@@ -30,6 +30,7 @@ use poise::{
         Mentionable as _, Message, MessageId, UserId,
     },
 };
+use tokio::sync::OnceCell;
 use tracing::warn;
 
 use super::{
@@ -298,8 +299,45 @@ struct Viewer {
     guild: Option<GuildId>,
     /// For looking up members
     discord: Arc<Http>,
-    /// Seerr users' Discord accounts, if they're in [`Self::guild`], as looked up so far
-    members: Mutex<HashMap<u32, Option<UserId>>>,
+}
+
+/// Seerr users' Discord accounts, if they're in each server, shared by every list, card and
+/// post. Discord allows only 5 member lookups a second per server, and the request posts' sweep
+/// would otherwise look up every post's requester and approver, so each is looked up once, and
+/// callers asking at the same time wait for the one lookup. They're kept until the bot restarts.
+#[derive(Debug, Default)]
+pub struct Members(Mutex<HashMap<(GuildId, u32), Member>>);
+
+/// One Seerr user's Discord account in a server, once looked up
+type Member = Arc<OnceCell<Option<UserId>>>;
+
+impl Members {
+    /// Seerr user `id`'s Discord account, if they linked one in Seerr and it's in `guild`
+    async fn get(&self, data: &Data, discord: &Http, guild: GuildId, id: u32) -> Option<UserId> {
+        let cell = self.cell(guild, id);
+        let found = cell
+            .get_or_try_init(|| async {
+                let Some(user) = data.seerr.discord_id(&data.http, id).await? else {
+                    return Ok::<_, anyhow::Error>(None);
+                };
+                Ok(guild.member(discord, user).await.is_ok().then_some(user))
+            })
+            .await;
+        match found {
+            Ok(&member) => member,
+            Err(e) => {
+                // Not kept, so the next call tries again
+                warn!("Fetching Seerr user {id}: {e:#}");
+                self.0.lock().unwrap().remove(&(guild, id));
+                None
+            }
+        }
+    }
+
+    /// Where Seerr user `id`'s account in `guild` is or will be
+    fn cell(&self, guild: GuildId, id: u32) -> Member {
+        Arc::clone(self.0.lock().unwrap().entry((guild, id)).or_default())
+    }
 }
 
 impl Viewer {
@@ -317,7 +355,6 @@ impl Viewer {
             profiles,
             guild: ctx.guild_id(),
             discord: ctx.serenity_context().http.clone(),
-            members: Mutex::default(),
         }
     }
 
@@ -330,21 +367,15 @@ impl Viewer {
             profiles: profiles(data).await,
             guild,
             discord,
-            members: Mutex::default(),
         }
     }
 
     /// How to show Seerr user `by`: a mention if they linked a Discord account in Seerr and are
     /// in this server, else their Seerr name. A mention in an embed never pings.
     async fn name(&self, data: &Data, by: &RequestedBy) -> String {
-        let known = self.members.lock().unwrap().get(&by.id).copied();
-        let member = match known {
-            Some(member) => member,
-            None => {
-                let member = self.member(data, by.id).await;
-                self.members.lock().unwrap().insert(by.id, member);
-                member
-            }
+        let member = match self.guild {
+            Some(guild) => data.members.get(data, &self.discord, guild, by.id).await,
+            None => None,
         };
         member.map_or_else(
             || {
@@ -354,23 +385,6 @@ impl Viewer {
             },
             |id| id.mention().to_string(),
         )
-    }
-
-    /// Seerr user `id`'s Discord account, if they linked one and it's in this server
-    async fn member(&self, data: &Data, id: u32) -> Option<UserId> {
-        let guild = self.guild?;
-        let discord = data
-            .seerr
-            .discord_id(&data.http, id)
-            .await
-            .inspect_err(|e| warn!("Fetching Seerr user {id}: {e:#}"))
-            .ok()
-            .flatten()?;
-        guild
-            .member(&*self.discord, discord)
-            .await
-            .is_ok()
-            .then_some(discord)
     }
 
     /// Whose requests to list: `None` for everyone's
