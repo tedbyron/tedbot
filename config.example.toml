@@ -17,6 +17,8 @@ api_key = ''
 # url = 'http://localhost:8096'
 # The Moonfin plugin is installed, so "now available" posts should link to Moonfin Web
 # moonfin = true
+# Jellyfin's launchd agent, so admins can restart it with /restart
+# launchd_label = 'org.nixos.jellyfin'
 
 [seerr]
 api_key = ''

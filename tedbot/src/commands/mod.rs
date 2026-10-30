@@ -5,6 +5,7 @@
 
 pub mod request;
 pub mod requests;
+pub mod restart;
 pub mod streams;
 pub mod tv;
 

@@ -1,6 +1,6 @@
 //! Jellyfin API client. Only the parts the bot uses.
 
-use std::net::IpAddr;
+use std::{net::IpAddr, time::Duration};
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -16,6 +16,8 @@ pub struct Jellyfin {
     pub api_key: String,
     /// Whether it has the Moonfin plugin
     pub moonfin: bool,
+    /// Its launchd agent's label, if `/restart` may restart it
+    pub launchd_label: Option<String>,
 }
 
 /// Response of `GET /Items`. Only the fields we read are deserialized.
@@ -163,6 +165,15 @@ impl Jellyfin {
             .filter(|p| p.r#type.as_deref() == Some("Director"))
             .map(|p| p.name)
             .collect())
+    }
+
+    /// Whether Jellyfin's health check passes within 5 seconds
+    pub async fn healthy(&self, http: &reqwest::Client) -> bool {
+        http.get(format!("{}/health", self.url.trim_end_matches('/')))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success())
     }
 
     /// Sessions that are playing something, in Jellyfin's order

@@ -33,7 +33,7 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(14 * 60);
 const MAX_FIELDS: usize = 25;
 
 /// Who's streaming from the Jellyfin server
-#[command(slash_command)]
+#[command(slash_command, ephemeral)]
 pub async fn streams(ctx: Context<'_>) -> Result<()> {
     ctx.defer_ephemeral().await?;
 

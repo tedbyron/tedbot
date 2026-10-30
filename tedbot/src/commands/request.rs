@@ -51,7 +51,7 @@ const MAX_OPTIONS: usize = 25;
 const UNREACHABLE: &str = "Couldn't reach Seerr, try again in a bit \u{1fae4}";
 
 /// Request a movie or show
-#[command(slash_command)]
+#[command(slash_command, ephemeral)]
 pub async fn request(
     ctx: Context<'_>,
     #[description = "Movie or show title"]

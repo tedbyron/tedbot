@@ -19,15 +19,21 @@ axum = { version = "0.8.9", default-features = false, features = [
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 futures = "0.3.34"
 poise = "0.7.1"
+rustix = { version = "1.1.6", features = ["process"] }
 quick-xml = { version = "0.42.0", features = ["serialize"] }
-reqwest = { version = "0.12.28", default-features = false, features = ["json"] }
+reqwest = { version = "0.13.5", default-features = false, features = [
+  "json",
+  "query",
+] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.54.1", features = [
   "rt-multi-thread",
   "macros",
   "net",
+  "process",
   "sync",
+  "time",
 ] }
 toml = "1.1.8"
 tracing = "0.1.44"

@@ -91,13 +91,17 @@ async fn run() -> Result<()> {
         )
         .init();
 
+    let mut commands = vec![
+        commands::request::request(),
+        commands::requests::requests(),
+        commands::streams::streams(),
+        commands::tv::tv(),
+    ];
+    if cfg.jellyfin.launchd_label.is_some() {
+        commands.push(commands::restart::restart());
+    }
     let options = FrameworkOptions {
-        commands: vec![
-            commands::request::request(),
-            commands::requests::requests(),
-            commands::streams::streams(),
-            commands::tv::tv(),
-        ],
+        commands,
         on_error: |e| Box::pin(on_error(e)),
         pre_command: |ctx| Box::pin(pre_command(ctx)),
         command_check: Some(|ctx| Box::pin(command_check(ctx))),
@@ -126,6 +130,7 @@ async fn run() -> Result<()> {
             url: cfg.jellyfin.url,
             api_key: cfg.jellyfin.api_key,
             moonfin: cfg.jellyfin.moonfin,
+            launchd_label: cfg.jellyfin.launchd_label,
         },
         seerr: seerr::Seerr {
             url: cfg.seerr.url,

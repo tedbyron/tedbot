@@ -97,7 +97,7 @@ impl Filter {
 }
 
 /// See your recent requests
-#[command(slash_command)]
+#[command(slash_command, ephemeral)]
 pub async fn requests(
     ctx: Context<'_>,
     #[description = "Only requests that are"] status: Option<Filter>,

@@ -41,7 +41,7 @@ const KEYPAD_MAX: usize = 12;
 const PAGE_SIZE: usize = 12;
 
 /// What's on live TV right now
-#[command(slash_command)]
+#[command(slash_command, ephemeral)]
 pub async fn tv(
     ctx: Context<'_>,
     #[description = "Channel number or name"]

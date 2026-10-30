@@ -538,6 +538,7 @@ mod tests {
                 url: unused(),
                 api_key: String::new(),
                 moonfin: false,
+                launchd_label: None,
             },
             seerr: Seerr {
                 url: unused(),
