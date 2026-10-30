@@ -46,6 +46,11 @@ pub struct Data {
     /// Members with this role count as admins
     admin_role: Option<serenity::RoleId>,
 }
+/// How long an HTTP request may take to connect, to Discord or upstream services
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long an HTTP request may take in all, so a lost connection fails instead of hanging
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 // In an `Arc` so the webhook can share it
 type Context<'a> = poise::Context<'a, Arc<Data>, Error>;
 type Framework = poise::Framework<Arc<Data>, Error>;
@@ -119,7 +124,10 @@ async fn run() -> Result<()> {
         }
         None => None,
     };
-    let http = reqwest::Client::new();
+    let http = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
+        .build()?;
     let data = Data {
         guide: ersatztv::GuideCache::new(http.clone(), cfg.ersatztv.url, Duration::from_secs(60)),
         http,
@@ -160,7 +168,16 @@ async fn run() -> Result<()> {
         .options(options)
         .build();
 
-    serenity::ClientBuilder::new(cfg.discord.token, GatewayIntents::non_privileged())
+    // serenity's default client has no timeout, so a lost connection could hang every reply
+    let discord = reqwest_012::Client::builder()
+        .use_rustls_tls()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
+        .build()?;
+    let discord = serenity::HttpBuilder::new(cfg.discord.token)
+        .client(discord)
+        .build();
+    serenity::ClientBuilder::new_with_http(discord, GatewayIntents::non_privileged())
         .framework(framework)
         .await?
         .start_autosharded()

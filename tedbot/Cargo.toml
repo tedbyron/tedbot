@@ -25,6 +25,10 @@ reqwest = { version = "0.13.5", default-features = false, features = [
   "json",
   "query",
 ] }
+# serenity's reqwest, to give its client a timeout
+reqwest_012 = { package = "reqwest", version = "0.12.28", default-features = false, features = [
+  "rustls-tls",
+] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.54.1", features = [
