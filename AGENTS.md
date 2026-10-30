@@ -62,14 +62,13 @@ store):
   list buttons but with 🔄 and a Seerr link button instead of a linked title:
   Approve, Approve all N (its confirmation is ephemeral), Decline, season and
   quality menus, or Cancel request. Anyone sees the buttons, so presses are
-  checked with `is_admin`'s role check (`has_admin_role`), except 🔄. The
-  buttons have to outlive any command, so presses come through poise's
-  `event_handler` (`requests::post_press`), with custom ids
-  `request-post:<id>-<action>`. `discord.admin_role`, if set, is pinged for
-  requests waiting for approval (the only allowed mention; the role must be
-  mentionable or the bot allowed to mention all roles). The webhook keeps each
-  open request's posts, found in the channels' last 1000 messages at startup,
-  and rebuilds them on `MEDIA_APPROVED`, `MEDIA_DECLINED`, `MEDIA_AVAILABLE` and
+  checked with `is_admin_user`, except 🔄. The buttons have to outlive any
+  command, so presses come through poise's `event_handler`
+  (`requests::post_press`), with custom ids `request-post:<id>-<action>`.
+  `discord.admins` who are in the channel's server are pinged for requests
+  waiting for approval (the only allowed mentions). The webhook keeps each open
+  request's posts, found in the channels' last 1000 messages at startup, and
+  rebuilds them on `MEDIA_APPROVED`, `MEDIA_DECLINED`, `MEDIA_AVAILABLE` and
   `MEDIA_FAILED`, and every 15 minutes, since Seerr says nothing when a show is
   partly downloaded (`MEDIA_AVAILABLE` waits for every requested season) or a
   download starts. Declined, completed and deleted requests are dropped. Posts
@@ -175,8 +174,8 @@ store):
 - **`/restart <service>`** (done): Jellyfin or tedbot. Admins only. Jellyfin's
   launchd agent is `jellyfin.launchd_label`, by default `org.nixos.jellyfin`.
   `default_member_permissions` hides it from members without Administrator;
-  Discord can't hide a command by role from a bot token, so the admin role is
-  given access in the server's Integrations settings, and the bot checks
+  Discord can't change a command's permissions from a bot token, so admins are
+  given access in each server's Integrations settings, and the bot checks
   `is_admin` regardless. Confirms with how many streams it would stop, runs
   `launchctl kickstart -k gui/<uid>/<label>` (the bot is an agent in the same
   session), then polls Jellyfin's `/health`. tedbot shuts its shards down so
@@ -205,8 +204,8 @@ link, and hands commands the Seerr user (`commands::seerr_user`). Request posts'
 buttons aren't commands and aren't checked this way.
 
 Anything that controls qBittorrent, approves requests, or deletes media must be
-restricted to admins: members with `discord.admin_role` (`commands::is_admin`;
-no role configured means no admins, and nobody is an admin in DMs). Discord's
+restricted to admins: the user ids in `discord.admins` (`commands::is_admin`),
+in every server and in DMs; none configured means no admins. Discord's
 Administrator permission doesn't count; the server's admins aren't necessarily
 the media server's.
 

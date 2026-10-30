@@ -72,7 +72,7 @@ pub async fn restart(
     #[description = "Service to restart"] service: Service,
 ) -> Result<()> {
     let name = service.name();
-    if !is_admin(ctx).await {
+    if !is_admin(ctx) {
         ctx.say("Only admins can restart services").await?;
         return Ok(());
     }

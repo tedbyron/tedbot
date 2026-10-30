@@ -37,7 +37,7 @@ const MAX_FIELDS: usize = 25;
 pub async fn streams(ctx: Context<'_>) -> Result<()> {
     ctx.defer_ephemeral().await?;
 
-    let admin = is_admin(ctx).await;
+    let admin = is_admin(ctx);
     let refresh = CreateActionRow::Buttons(vec![
         CreateButton::new(format!("{}-refresh", ctx.id()))
             .emoji('\u{1f504}')

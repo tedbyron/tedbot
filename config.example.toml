@@ -3,8 +3,8 @@
 
 [discord]
 token = ''
-# Admin role id
-# admin_role = '123456789012345678'
+# User ids of the bot's admins, in every server. They're pinged for requests waiting for approval.
+# admins = ['123456789012345678']
 
 # Bot activity (competing [in] || listening [to] || playing || streaming || watching)
 [discord.activity]

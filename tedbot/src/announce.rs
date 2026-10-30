@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use poise::serenity_prelude::{
     Channel, ChannelId, CreateActionRow, CreateAllowedMentions, CreateButton, CreateEmbed,
-    CreateMessage, GuildId, Http, Mentionable as _, MessageId, RoleId, UserId,
+    CreateMessage, GuildId, Http, Mentionable as _, MessageId, UserId,
 };
 use tracing::warn;
 
@@ -39,8 +39,8 @@ pub enum Event {
 pub struct Targets {
     pub requests: Vec<ChannelId>,
     pub available: Vec<ChannelId>,
-    /// Pinged for requests waiting for approval
-    pub admin_role: Option<RoleId>,
+    /// Pinged for requests waiting for approval, where they're in the channel's server
+    pub admins: Vec<UserId>,
 }
 
 impl Targets {
@@ -67,19 +67,26 @@ pub async fn post(
     match event {
         Event::Requested => {
             // Only requests waiting for approval need an admin
-            let ping = targets
-                .admin_role
-                .filter(|_| request.status == RequestStatus::Pending);
+            let pending = request.status == RequestStatus::Pending;
             for &channel in &targets.requests {
                 let guild = guild(discord, channel).await;
+                let mut ping = Vec::new();
+                if let Some(guild) = guild.filter(|_| pending) {
+                    for &admin in &targets.admins {
+                        if guild.member(discord, admin).await.is_ok() {
+                            ping.push(admin);
+                        }
+                    }
+                }
                 let (embed, components) =
                     post_card(data, discord.clone(), guild, request.clone()).await?;
                 let mut message = CreateMessage::new()
                     .embed(embed)
                     .components(components)
-                    .allowed_mentions(CreateAllowedMentions::new().roles(ping));
-                if let Some(role) = ping {
-                    message = message.content(role.mention().to_string());
+                    .allowed_mentions(CreateAllowedMentions::new().users(ping.iter().copied()));
+                if !ping.is_empty() {
+                    let mentions: Vec<_> = ping.iter().map(|u| u.mention().to_string()).collect();
+                    message = message.content(mentions.join(" "));
                 }
                 send(discord, channel, message, &mut posts).await;
             }

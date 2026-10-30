@@ -10,7 +10,7 @@ pub mod streams;
 pub mod tv;
 
 use anyhow::{Context as _, Result};
-use poise::serenity_prelude::{Builder as _, EditInteractionResponse, Member};
+use poise::serenity_prelude::{Builder as _, EditInteractionResponse, UserId};
 
 use crate::{Context, Data, seerr::Requester};
 
@@ -23,16 +23,16 @@ async fn seerr_user(ctx: Context<'_>) -> Result<Requester> {
         .context("Invoker's Seerr user missing")
 }
 
-/// Whether the invoker has the configured admin role, so never in DMs. Discord's Administrator
-/// permission doesn't count, since the server's admins aren't necessarily the media server's.
-async fn is_admin(ctx: Context<'_>) -> bool {
-    has_admin_role(ctx.data(), ctx.author_member().await.as_deref())
+/// Whether the invoker is one of the configured admins, in any server or DM. Discord's
+/// Administrator permission doesn't count, since the server's admins aren't necessarily the media
+/// server's.
+fn is_admin(ctx: Context<'_>) -> bool {
+    is_admin_user(ctx.data(), ctx.author().id)
 }
 
-/// Whether `member` has the configured admin role. `None` outside a server.
-fn has_admin_role(data: &Data, member: Option<&Member>) -> bool {
-    data.admin_role
-        .is_some_and(|role| member.is_some_and(|m| m.roles.contains(&role)))
+/// Whether `user` is one of the configured admins
+fn is_admin_user(data: &Data, user: UserId) -> bool {
+    data.admins.contains(&user)
 }
 
 /// Backslash-escapes Discord markdown characters so titles show literally

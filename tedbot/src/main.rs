@@ -43,8 +43,8 @@ pub struct Data {
     radarr_4k: Option<arr::Arr>,
     /// 4K Sonarr connection info, if configured
     sonarr_4k: Option<arr::Arr>,
-    /// Members with this role count as admins
-    admin_role: Option<serenity::RoleId>,
+    /// Users who count as admins
+    admins: Vec<serenity::UserId>,
     /// Seerr users' Discord accounts in each server, as looked up lately
     members: commands::requests::Members,
 }
@@ -114,13 +114,12 @@ async fn run() -> Result<()> {
     };
 
     let activity = cfg.discord.activity;
-    let admin_role = cfg.discord.admin_role;
     let webhook = match cfg.seerr.webhook {
         Some(c) => {
             let targets = announce::Targets {
                 requests: c.requests_channels,
                 available: c.available_channels,
-                admin_role,
+                admins: cfg.discord.admins.clone(),
             };
             Some(webhook::Listener::bind(c.port, c.forward, targets).await?)
         }
@@ -161,7 +160,7 @@ async fn run() -> Result<()> {
             url: c.url,
             api_key: c.api_key,
         }),
-        admin_role,
+        admins: cfg.discord.admins,
         members: commands::requests::Members::default(),
     };
     let framework = Framework::builder()

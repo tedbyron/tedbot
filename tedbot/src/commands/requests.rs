@@ -34,7 +34,7 @@ use tokio::sync::OnceCell;
 use tracing::warn;
 
 use super::{
-    escape, has_admin_role, is_admin, remove_buttons,
+    escape, is_admin, is_admin_user, remove_buttons,
     request::{can_unsend, cancel, check_partial, ranges, request_download, status, truncate},
     seerr_user,
 };
@@ -107,7 +107,7 @@ pub async fn requests(
 
     let data = ctx.data();
     let user = seerr_user(ctx).await?;
-    let admin = is_admin(ctx).await;
+    let admin = is_admin(ctx);
 
     let id = ctx.id().to_string();
     let viewer = Viewer::load(ctx, Some(user), admin, status.unwrap_or_default()).await;
@@ -1151,7 +1151,7 @@ pub async fn post_press(
     let Ok(request) = request.parse::<u32>() else {
         return Ok(());
     };
-    if action != "refresh" && !has_admin_role(data, press.member.as_ref()) {
+    if action != "refresh" && !is_admin_user(data, press.user.id) {
         let reply = CreateInteractionResponseMessage::new()
             .content("Only admins can change requests")
             .ephemeral(true);

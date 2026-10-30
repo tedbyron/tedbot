@@ -551,7 +551,7 @@ mod tests {
             sonarr: None,
             radarr_4k: None,
             sonarr_4k: None,
-            admin_role: None,
+            admins: Vec::new(),
             members: Members::default(),
         };
         listener.spawn(Arc::new(Http::new("")), Arc::new(data));

@@ -67,7 +67,7 @@ pub async fn request(
     }
 
     let id = ctx.id().to_string();
-    let mut viewer = Viewer::load(data, user, is_admin(ctx).await).await;
+    let mut viewer = Viewer::load(data, user, is_admin(ctx)).await;
     let mut card = Card::build(data, &results, 0, &viewer).await?;
     let reply = CreateReply::default()
         .components(card.components(&id))

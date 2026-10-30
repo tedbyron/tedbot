@@ -2,7 +2,7 @@
 
 #![allow(clippy::module_name_repetitions)]
 
-use poise::serenity_prelude::{ChannelId, RoleId};
+use poise::serenity_prelude::{ChannelId, UserId};
 use serde::{Deserialize, Deserializer};
 
 /// Bot config
@@ -34,9 +34,10 @@ pub struct Config {
 pub struct DiscordConfig {
     /// Bot token from the Discord developer portal
     pub token: String,
-    /// Optional role whose members count as admins, pinged for requests waiting for approval.
-    /// Without it nobody is an admin.
-    pub admin_role: Option<RoleId>,
+    /// User ids of the admins, in every server, pinged for requests waiting for approval in
+    /// servers they're in. Without any nobody is an admin.
+    #[serde(default)]
+    pub admins: Vec<UserId>,
     /// Optional Discord activity
     pub activity: Option<DiscordActivityConfig>,
 }
