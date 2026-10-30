@@ -1,6 +1,11 @@
 //! Seerr API client. Only the parts the bot uses.
 
-use std::{collections::HashMap, fmt};
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use poise::serenity_prelude::UserId;
@@ -15,7 +20,19 @@ pub struct Seerr {
     pub api_key: String,
     /// Address people open in a browser, for links. `None` leaves links out.
     pub public_url: Option<String>,
+    /// Who linked which Discord account, for [`Self::user_for`]
+    pub links: Links,
 }
+
+/// How long [`Links`] are kept before they're fetched again
+const LINKS_TTL: Duration = Duration::from_secs(60);
+
+/// Seerr users by the Discord account they linked, as fetched at some instant
+type Linked = (Instant, HashMap<UserId, Requester>);
+
+/// The last [`Linked`] fetched, if any
+#[derive(Clone, Debug, Default)]
+pub struct Links(Arc<tokio::sync::Mutex<Option<Linked>>>);
 
 /// Response of `GET /api/v1/user`
 #[derive(Debug, Deserialize)]
@@ -813,21 +830,32 @@ impl Seerr {
         Ok(linked)
     }
 
-    /// The Seerr user who put `discord` in their notification settings, if any
+    /// The Seerr user who put `discord` in their notification settings, if any. Every command
+    /// and autocomplete asks, so who linked what is fetched at most once per [`LINKS_TTL`].
     pub async fn user_for(
         &self,
         http: &reqwest::Client,
         discord: UserId,
     ) -> Result<Option<Requester>> {
-        for user in self.users(http).await? {
-            if self.discord_id(http, user.id).await? == Some(discord) {
-                return Ok(Some(Requester {
-                    id: user.id,
-                    permissions: user.permissions,
-                }));
+        let mut links = self.links.0.lock().await;
+        if !links
+            .as_ref()
+            .is_some_and(|(at, _)| at.elapsed() < LINKS_TTL)
+        {
+            let mut fetched = HashMap::new();
+            for user in self.users(http).await? {
+                if let Some(id) = self.discord_id(http, user.id).await? {
+                    fetched.entry(id).or_insert(Requester {
+                        id: user.id,
+                        permissions: user.permissions,
+                    });
+                }
             }
+            *links = Some((Instant::now(), fetched));
         }
-        Ok(None)
+        Ok(links
+            .as_ref()
+            .and_then(|(_, linked)| linked.get(&discord).copied()))
     }
 
     /// How many requests Seerr user `id` has left

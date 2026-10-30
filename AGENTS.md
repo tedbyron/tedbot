@@ -116,42 +116,42 @@ store):
   button. Shows get a season dropdown (no pick means all open seasons; Discord
   caps it at 25 options). Autocomplete fills in `movie:<id>` or `tv:<id>`.
   Requests are made with `X-API-User` as the Seerr user whose `discordIds` match
-  the invoker, so Seerr's own permissions, quotas and auto-approve apply;
-  unlinked users see a disabled button. Seerr rejects search queries with any
-  unencoded reserved character (even `+`), so the query is percent-encoded by
-  hand. Seerr's API will make a new request for an available movie, so only show
-  Request when the status is missing. `seerr.public_url` links the title to the
-  Seerr page. Users with Seerr's Manage Requests or Advanced Requests get a
-  quality profile dropdown (default server's profiles; nothing picked lets Seerr
-  choose, which handles anime). Seerr doesn't check permissions on `profileId`,
-  so the bot must. Users with Manage Requests and a quota get a "Request, bypass
-  quota" button (`ignoreQuota`); Manage Users means no quota at all. A "Cancel
-  request" button shows while a request is waiting for approval or approved but
-  not downloaded yet, not even in part: requesters for their own, bot admins
-  (`is_admin`) for anyone's. The bot checks this itself and asks Seerr as its
-  admin. Approved requests come out of Radarr/Sonarr directly (`arr.rs`,
-  optional `[radarr]`/`[sonarr]` config): queue items removed from qBittorrent,
-  then the movie deleted, or for shows only the request's seasons unmonitored
-  (the series goes only if nothing's left). Radarr/Sonarr are checked for files
-  first, since Seerr can lag behind, and nothing is touched if any exist.
+  the invoker, so Seerr's own permissions, quotas and auto-approve apply. Seerr
+  rejects search queries with any unencoded reserved character (even `+`), so
+  the query is percent-encoded by hand. Seerr's API will make a new request for
+  an available movie, so only show Request when the status is missing.
+  `seerr.public_url` links the title to the Seerr page. Users with Seerr's
+  Manage Requests or Advanced Requests get a quality profile dropdown (default
+  server's profiles; nothing picked lets Seerr choose, which handles anime).
+  Seerr doesn't check permissions on `profileId`, so the bot must. Users with
+  Manage Requests and a quota get a "Request, bypass quota" button
+  (`ignoreQuota`); Manage Users means no quota at all. A "Cancel request" button
+  shows while a request is waiting for approval or approved but not downloaded
+  yet, not even in part: requesters for their own, bot admins (`is_admin`) for
+  anyone's. The bot checks this itself and asks Seerr as its admin. Approved
+  requests come out of Radarr/Sonarr directly (`arr.rs`, optional
+  `[radarr]`/`[sonarr]` config): queue items removed from qBittorrent, then the
+  movie deleted, or for shows only the request's seasons unmonitored (the series
+  goes only if nothing's left). Radarr/Sonarr are checked for files first, since
+  Seerr can lag behind, and nothing is touched if any exist.
 - **`/requests`** (done): ephemeral list of requests, newest first, 10 per page
   with ◀ 🔄 ▶ and an optional status filter. Everyone sees their own (via
-  `requestedBy`, so unlinked users get told to link); bot admins see everyone's.
-  A menu opens one as a card (poster, status, seasons, when, and for admins who
-  requested and approved it and the quality), with ◀ ▶ through the list. Seerr
-  users show as a mention when their `discordIds` account is in the server, like
-  `/streams`, else by Seerr name (looked up once per user per invocation). The
-  card offers Cancel request on the same terms as `/request` (shared code), and
-  for admins on pending requests Approve, Decline, and season and quality menus
-  that edit the request straight away (`PUT /request/{id}`, which Seerr only
-  allows while pending and which resets every field it's not sent, so the rest
-  are sent back as they were). Pending cards also get "Approve all N" when the
-  same requester has other pending requests each made within an hour of the one
-  before; it asks to confirm with the titles listed, then approves them one at a
-  time and lists any that failed. Quality is only editable when the request goes
-  to the default server, whose profiles are the ones the bot knows. Seerr is
-  asked as its admin, so the bot checks `is_admin` itself. Request lists carry
-  no titles, so each row's details are fetched.
+  `requestedBy`); bot admins see everyone's. A menu opens one as a card (poster,
+  status, seasons, when, and for admins who requested and approved it and the
+  quality), with ◀ ▶ through the list. Seerr users show as a mention when their
+  `discordIds` account is in the server, like `/streams`, else by Seerr name
+  (looked up once per user per invocation). The card offers Cancel request on
+  the same terms as `/request` (shared code), and for admins on pending requests
+  Approve, Decline, and season and quality menus that edit the request straight
+  away (`PUT /request/{id}`, which Seerr only allows while pending and which
+  resets every field it's not sent, so the rest are sent back as they were).
+  Pending cards also get "Approve all N" when the same requester has other
+  pending requests each made within an hour of the one before; it asks to
+  confirm with the titles listed, then approves them one at a time and lists any
+  that failed. Quality is only editable when the request goes to the default
+  server, whose profiles are the ones the bot knows. Seerr is asked as its
+  admin, so the bot checks `is_admin` itself. Request lists carry no titles, so
+  each row's details are fetched.
 - **`/streams`** (done): ephemeral, since views differ. Everyone gets the stream
   count, upload in use and who's watching. Admins also get what each stream is
   playing, direct play or transcode, and LAN bitrate. Bitrates count unpaused
@@ -184,6 +184,12 @@ store):
 Seerr and Jellyfin (Webhook plugin) can push events by HTTP POST. Seerr's
 already comes to the bot (`webhook.rs`); new Seerr events go there. Any other
 listener binds to localhost too.
+
+Every command (and autocomplete) is only for users whose Discord id is in their
+Seerr notification settings: `command_check` in `main.rs` looks them up
+(`Seerr::user_for`, refetched at most once a minute), tells anyone else how to
+link, and hands commands the Seerr user (`commands::seerr_user`). Request posts'
+buttons aren't commands and aren't checked this way.
 
 Anything that controls qBittorrent, approves requests, or deletes media must be
 restricted to admins: members with `discord.admin_role` (`commands::is_admin`;

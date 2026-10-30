@@ -469,7 +469,11 @@ mod tests {
             }))
         );
     }
-    use crate::{ersatztv::GuideCache, jellyfin::Jellyfin, seerr::Seerr};
+    use crate::{
+        ersatztv::GuideCache,
+        jellyfin::Jellyfin,
+        seerr::{Links, Seerr},
+    };
 
     /// The Authorization header and body the upstream got
     type Seen = Arc<Mutex<Option<(String, Bytes)>>>;
@@ -539,6 +543,7 @@ mod tests {
                 url: unused(),
                 api_key: String::new(),
                 public_url: None,
+                links: Links::default(),
             },
             radarr: None,
             sonarr: None,

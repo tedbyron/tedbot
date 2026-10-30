@@ -131,6 +131,7 @@ async fn run() -> Result<()> {
             url: cfg.seerr.url,
             api_key: cfg.seerr.api_key,
             public_url: cfg.seerr.public_url,
+            links: seerr::Links::default(),
         },
         radarr: cfg.radarr.map(|c| arr::Arr {
             url: c.url,
@@ -173,6 +174,12 @@ async fn on_error(err: FrameworkError<'_>) {
     if let poise::FrameworkError::Command { error, ctx, .. } = err {
         error!("{error:#}");
         drop(ctx.send(reply("Error executing command \u{1fae4}")).await);
+    } else if let poise::FrameworkError::CommandCheckFailed {
+        error: None, ctx, ..
+    } = err
+    {
+        // Already told why, if they're not a bot
+        info!("{} can't use `{}`", ctx.author().name, ctx.command().name);
     } else if let poise::FrameworkError::EventHandler { error, event, .. } = err {
         // Its `Display` leaves out the error itself
         error!("Handling {}: {error:#}", event.snake_case_name());
@@ -204,10 +211,37 @@ async fn pre_command(ctx: Context<'_>) {
     info!("{} used `{}`", ctx.author().name, ctx.invocation_string());
 }
 
-/// Ignores commands from other bots
-#[allow(clippy::unused_async)]
+/// Ignores commands from other bots, and from users who haven't linked their Discord account in
+/// Seerr, who are told how to. Commands get the invoker's Seerr user from
+/// [`commands::seerr_user`].
 async fn command_check(ctx: Context<'_>) -> Result<bool> {
-    Ok(!ctx.author().bot)
+    if ctx.author().bot {
+        return Ok(false);
+    }
+    let data = ctx.data();
+    let Some(user) = data.seerr.user_for(&data.http, ctx.author().id).await? else {
+        let autocomplete = matches!(
+            ctx,
+            poise::Context::Application(app)
+                if app.interaction_type == poise::CommandInteractionType::Autocomplete
+        );
+        if !autocomplete {
+            let mut content = "To use tedbot, add your Discord user ID to your Seerr \
+                               notification settings"
+                .to_owned();
+            if let Some(url) = &data.seerr.public_url {
+                content = format!(
+                    "{content}: {}/profile/settings/notifications/discord",
+                    url.trim_end_matches('/')
+                );
+            }
+            ctx.send(CreateReply::default().ephemeral(true).content(content))
+                .await?;
+        }
+        return Ok(false);
+    };
+    ctx.set_invocation_data(user).await;
+    Ok(true)
 }
 
 /// Runs once the gateway is ready: registers commands, logs the invite link, sets the activity,

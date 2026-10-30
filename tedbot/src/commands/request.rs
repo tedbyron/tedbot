@@ -27,7 +27,7 @@ use poise::{
 };
 use tracing::warn;
 
-use super::{escape, is_admin, remove_buttons, requests::profiles};
+use super::{escape, is_admin, remove_buttons, requests::profiles, seerr_user};
 use crate::{
     Context, Data,
     arr::{Arr, Download, Removed},
@@ -61,11 +61,8 @@ pub async fn request(
     ctx.defer_ephemeral().await?;
 
     let data = ctx.data();
-    let (user, results) = tokio::join!(
-        data.seerr.user_for(&data.http, ctx.author().id),
-        results(data, &title),
-    );
-    let (user, results) = (user?, results?);
+    let user = seerr_user(ctx).await?;
+    let results = results(data, &title).await?;
     if results.is_empty() {
         ctx.say(format!("Nothing matches \"{}\"", escape(&title)))
             .await?;
@@ -125,18 +122,16 @@ pub async fn request(
         let token = press.token;
         last = Some(token.clone());
 
-        let done = match (action, user) {
-            (Some(Action::Request { bypass }), Some(user)) => {
-                Some(card.request(data, user.id, bypass).await)
-            }
-            (Some(Action::Cancel), _) => {
+        let done = match action {
+            Some(Action::Request { bypass }) => Some(card.request(data, user.id, bypass).await),
+            Some(Action::Cancel) => {
                 let (notice, changed) = card.cancel(data).await;
                 Some((Some(notice), changed))
             }
-            _ => None,
+            None => None,
         };
         // Both use up or give back quota
-        if let (Some((_, true)), Some(user)) = (&done, user) {
+        if let Some((_, true)) = done {
             viewer.quotas = Viewer::quotas(data, user).await;
         }
         let mut notice = done.and_then(|(notice, _)| notice);
@@ -224,8 +219,8 @@ enum Action {
 /// Who's looking, and what Seerr lets them do. Everything past the user is best effort: if it
 /// can't be fetched, the card goes without it.
 struct Viewer {
-    /// The invoker's Seerr user, `None` if they haven't linked their Discord id
-    user: Option<Requester>,
+    /// The invoker's Seerr user
+    user: Requester,
     /// Whether the invoker is a bot admin, who may cancel anyone's request at any point
     admin: bool,
     /// The user's quotas
@@ -237,18 +232,10 @@ struct Viewer {
 
 impl Viewer {
     /// Fetches the user's quotas and the servers' quality profiles
-    async fn load(data: &Data, user: Option<Requester>, admin: bool) -> Self {
-        let Some(user) = user else {
-            return Self {
-                user,
-                admin,
-                quotas: None,
-                profiles: Vec::new(),
-            };
-        };
+    async fn load(data: &Data, user: Requester, admin: bool) -> Self {
         let (quotas, profiles) = tokio::join!(Self::quotas(data, user), profiles(data));
         Self {
-            user: Some(user),
+            user,
             admin,
             quotas,
             profiles,
@@ -305,8 +292,6 @@ struct Card {
     index: usize,
     /// Number of results, for ◀ ▶
     count: usize,
-    /// Whether the invoker is linked to a Seerr user, and so can request
-    linked: bool,
     /// The HD and 4K versions
     versions: [Version; 2],
     /// Which version the menus and buttons are for
@@ -353,8 +338,7 @@ impl Card {
         }
 
         // 4K is only an upgrade: it can be requested once the HD version is downloaded
-        let can_4k = viewer.user.is_some_and(|u| u.can_request_4k(media))
-            && viewer.server(media, true).is_some();
+        let can_4k = viewer.user.can_request_4k(media) && viewer.server(media, true).is_some();
         let blocked = details.status() == Status::Blocklisted;
         let numbers: Vec<u32> = details.season_numbers().collect();
         // Each season's status in HD and 4K, or the movie's as season `None`
@@ -439,8 +423,8 @@ impl Card {
             }
         };
 
-        let can_pick = viewer.user.is_some_and(Requester::can_pick_profile);
-        let cancellable = details.cancellable(viewer.user.map(|u| u.id), viewer.admin);
+        let can_pick = viewer.user.can_pick_profile();
+        let cancellable = details.cancellable(Some(viewer.user.id), viewer.admin);
         let versions = open.map(|(requestable, open)| Version {
             requestable,
             open,
@@ -462,8 +446,7 @@ impl Card {
         });
         let requestable = versions.iter().any(|v| v.requestable);
 
-        // One line each: "TV show quota: 4 of 6 seasons left (7 days)", "1 of 20", and how to link
-        let linked = viewer.user.is_some();
+        // One line each: "TV show quota: 4 of 6 seasons left (7 days)" and "1 of 20"
         let quota = viewer.quotas.as_ref().map(|q| match media {
             Media::Movie(_) => (&q.movie, "movies"),
             Media::Tv(_) => (&q.tv, "seasons"),
@@ -480,13 +463,6 @@ impl Card {
         }
         if results.len() > 1 {
             footer.push(format!("{} of {}", index + 1, results.len()));
-        }
-        if requestable && !linked {
-            footer.push(
-                "To request from here, add your Discord user ID to your Seerr notification \
-                 settings"
-                    .into(),
-            );
         }
         if !footer.is_empty() {
             embed = embed.footer(CreateEmbedFooter::new(footer.join("\n")));
@@ -508,12 +484,11 @@ impl Card {
             title,
             index,
             count: results.len(),
-            linked,
             versions,
             is_4k,
             picked: Vec::new(),
             profile: None,
-            can_bypass: limited && viewer.user.is_some_and(Requester::can_bypass_quota),
+            can_bypass: limited && viewer.user.can_bypass_quota(),
             tvdb_id,
             watch,
         })
@@ -585,7 +560,7 @@ impl Card {
         let version = self.version();
         let mut rows = Vec::new();
 
-        if version.requestable && self.linked && version.open.len() > 1 {
+        if version.requestable && version.open.len() > 1 {
             let options = version
                 .open
                 .iter()
@@ -608,7 +583,7 @@ impl Card {
             ));
         }
 
-        if version.requestable && self.linked && !version.profiles.is_empty() {
+        if version.requestable && !version.profiles.is_empty() {
             let options = version
                 .profiles
                 .iter()
@@ -641,8 +616,7 @@ impl Card {
             buttons.push(
                 button("request")
                     .label(self.request_label())
-                    .style(ButtonStyle::Primary)
-                    .disabled(!self.linked),
+                    .style(ButtonStyle::Primary),
             );
         }
         if version.requestable && self.can_bypass {

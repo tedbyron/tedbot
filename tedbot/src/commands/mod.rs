@@ -8,10 +8,19 @@ pub mod requests;
 pub mod streams;
 pub mod tv;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use poise::serenity_prelude::{Builder as _, EditInteractionResponse, Member};
 
-use crate::{Context, Data};
+use crate::{Context, Data, seerr::Requester};
+
+/// The invoker's Seerr user, as found by `command_check` in `main.rs`, which only lets linked
+/// users through
+async fn seerr_user(ctx: Context<'_>) -> Result<Requester> {
+    ctx.invocation_data::<Requester>()
+        .await
+        .map(|user| *user)
+        .context("Invoker's Seerr user missing")
+}
 
 /// Whether the invoker has the configured admin role, so never in DMs. Discord's Administrator
 /// permission doesn't count, since the server's admins aren't necessarily the media server's.

@@ -35,6 +35,7 @@ use tracing::warn;
 use super::{
     escape, has_admin_role, is_admin, remove_buttons,
     request::{can_unsend, cancel, check_partial, ranges, request_download, status, truncate},
+    seerr_user,
 };
 use crate::{
     Context, Data,
@@ -104,22 +105,11 @@ pub async fn requests(
     ctx.defer_ephemeral().await?;
 
     let data = ctx.data();
-    let (user, admin) = tokio::join!(
-        data.seerr.user_for(&data.http, ctx.author().id),
-        is_admin(ctx),
-    );
-    let user = user?;
-    if user.is_none() && !admin {
-        ctx.say(
-            "To see your requests here, add your Discord user ID to your Seerr notification \
-             settings",
-        )
-        .await?;
-        return Ok(());
-    }
+    let user = seerr_user(ctx).await?;
+    let admin = is_admin(ctx).await;
 
     let id = ctx.id().to_string();
-    let viewer = Viewer::load(ctx, user, admin, status.unwrap_or_default()).await;
+    let viewer = Viewer::load(ctx, Some(user), admin, status.unwrap_or_default()).await;
     let mut screen = Screen::build(data, &viewer, View::List { page: 0 }, &id).await?;
     if screen.total == 0 {
         let what = match viewer.filter {
@@ -297,7 +287,7 @@ impl View {
 
 /// Who's looking, and what they may do
 struct Viewer {
-    /// The invoker's Seerr user, `None` if they haven't linked their Discord id
+    /// The invoker's Seerr user, `None` for request posts
     user: Option<Requester>,
     /// Whether the invoker is a bot admin, who sees everyone's requests and may act on them
     admin: bool,
