@@ -1,9 +1,9 @@
 //! Seerr API client. Only the parts the bot uses.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -22,6 +22,8 @@ pub struct Seerr {
     pub public_url: Option<String>,
     /// Who linked which Discord account, for [`Self::user_for`]
     pub links: Links,
+    /// Titles seen in [`Self::details`], for when it's slow
+    pub titles: Titles,
 }
 
 /// How long [`Links`] are kept before they're fetched again
@@ -33,6 +35,49 @@ type Linked = (Instant, HashMap<UserId, Requester>);
 /// The last [`Linked`] fetched, if any
 #[derive(Clone, Debug, Default)]
 pub struct Links(Arc<tokio::sync::Mutex<Option<Linked>>>);
+
+/// Most titles kept in [`Titles`]
+const TITLES_MAX: usize = 2000;
+
+/// Titles and release dates of movies and shows Seerr has looked up, which don't change. Seerr
+/// gets them from TMDB and keeps them only for a while, so a lookup can take as long as TMDB does.
+/// The oldest go first once there are [`TITLES_MAX`].
+#[derive(Clone, Debug, Default)]
+pub struct Titles(Arc<Mutex<TitleMap>>);
+
+/// Titles by media, and the order they were added in
+type TitleMap = (HashMap<Media, Title>, VecDeque<Media>);
+
+/// A title as [`Titles`] keeps it
+#[derive(Clone, Debug)]
+pub struct Title {
+    pub title: String,
+    /// `YYYY-MM-DD`, if known
+    pub release_date: Option<String>,
+}
+
+impl Titles {
+    /// `media`'s title, if it's been looked up
+    pub fn get(&self, media: Media) -> Option<Title> {
+        self.0.lock().unwrap().0.get(&media).cloned()
+    }
+
+    fn insert(&self, media: Media, details: &Details) {
+        let title = Title {
+            title: details.title.clone(),
+            release_date: details.release_date.clone(),
+        };
+        let (titles, order) = &mut *self.0.lock().unwrap();
+        if titles.insert(media, title).is_none() {
+            order.push_back(media);
+            if order.len() > TITLES_MAX
+                && let Some(oldest) = order.pop_front()
+            {
+                titles.remove(&oldest);
+            }
+        }
+    }
+}
 
 /// Response of `GET /api/v1/user`
 #[derive(Debug, Deserialize)]
@@ -233,7 +278,7 @@ impl SearchResult {
 }
 
 /// A movie or show by TMDB id
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Media {
     Movie(u32),
     Tv(u32),
@@ -929,13 +974,15 @@ impl Seerr {
 
     /// A movie or show's details and where it stands
     pub async fn details(&self, http: &reqwest::Client, media: Media) -> Result<Details> {
-        Ok(self
+        let details = self
             .get(http, &media.path())
             .send()
             .await?
             .error_for_status()?
             .json()
-            .await?)
+            .await?;
+        self.titles.insert(media, &details);
+        Ok(details)
     }
 
     /// Requests `media` as Seerr user `user`, so their permissions, quota and auto-approval

@@ -12,12 +12,15 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Result};
 use chrono::DateTime;
-use futures::future::join_all;
+use futures::{
+    StreamExt as _,
+    future::{BoxFuture, join_all},
+};
 use poise::{
     ChoiceParameter, CreateReply, command,
     serenity_prelude::{
@@ -55,6 +58,9 @@ const NAV_TIMEOUT: Duration = Duration::from_secs(14 * 60);
 const POSTER_URL: &str = "https://image.tmdb.org/t/p/w342";
 /// Requests per page of the list
 const PAGE_SIZE: usize = 10;
+/// How long the list waits for each request's details before showing it without them. Those
+/// still coming are looked up again in the background, and the list updated when they arrive.
+const LIST_WAIT: Duration = Duration::from_secs(3);
 /// Discord allows at most 25 options per select menu
 const MAX_OPTIONS: usize = 25;
 /// Longest gap between one request and the next for them to count as one batch, in seconds
@@ -63,6 +69,8 @@ const BATCH_GAP: i64 = 60 * 60;
 const BATCH_MAX: usize = 100;
 /// Most requests in a batch listed by name when confirming
 const BATCH_SHOWN: usize = 25;
+/// Stands in for what's still being looked up
+const LOADING: &str = "Loading\u{2026}";
 /// Reply when Seerr can't be reached
 const UNREACHABLE: &str = "Couldn't reach Seerr, try again in a bit \u{1fae4}";
 /// Start of custom ids on request posts, followed by the request id: `request-post:12-approve`
@@ -129,13 +137,59 @@ pub async fn requests(
         .embed(std::mem::take(&mut screen.embed));
     let handle = ctx.send(reply).await?;
     let message = handle.message().await?.id;
-    let mut last = None;
-
-    while let Some(press) = ComponentInteractionCollector::new(ctx)
+    let mut last: Option<String> = None;
+    // Counted from the newest token, which the reply is edited with
+    let mut deadline = Instant::now() + NAV_TIMEOUT;
+    let mut retry = fetch_late(data, &screen.late);
+    // One collector for the whole command, so presses made while a screen is being built wait
+    // for it instead of going unanswered
+    let mut presses = ComponentInteractionCollector::new(ctx)
         .message_id(message)
-        .timeout(NAV_TIMEOUT)
-        .await
-    {
+        .stream();
+
+    loop {
+        let press = tokio::select! {
+            press = tokio::time::timeout_at(deadline.into(), presses.next()) => press,
+            arrived = arrival(&mut retry) => {
+                // Used by the next build instead of asking Seerr again, even if they failed, so
+                // nothing stays loading
+                retry = None;
+                viewer.arrived.lock().unwrap().extend(arrived);
+                let next = Screen::build(data, &viewer, screen.view, &id).await;
+                viewer.arrived.lock().unwrap().clear();
+                let mut next = match next {
+                    Ok(next) => next,
+                    Err(e) => {
+                        warn!("Loading requests: {e:#}");
+                        continue;
+                    }
+                };
+                let components = std::mem::take(&mut next.components);
+                let embed = std::mem::take(&mut next.embed);
+                screen = next;
+                retry = fetch_late(data, &screen.late);
+                // Not fatal: the next press edits it anyway
+                let edited = match &last {
+                    Some(token) => EditInteractionResponse::new()
+                        .components(components)
+                        .embed(embed)
+                        .execute(ctx, token)
+                        .await
+                        .map(drop),
+                    None => {
+                        let edit = CreateReply::default().components(components).embed(embed);
+                        handle.edit(ctx, edit).await
+                    }
+                };
+                if let Err(e) = edited {
+                    warn!("Showing late request details: {e:#}");
+                }
+                continue;
+            }
+        };
+        let Ok(Some(press)) = press else {
+            break;
+        };
         let values: Vec<&str> = match &press.data.kind {
             ComponentInteractionDataKind::StringSelect { values } => {
                 values.iter().map(String::as_str).collect()
@@ -185,6 +239,7 @@ pub async fn requests(
             .await?;
         let token = press.token;
         last = Some(token.clone());
+        deadline = Instant::now() + NAV_TIMEOUT;
 
         let (view, mut notice) = match (action, &screen.card) {
             (Action::Go(view), _) => (view, None),
@@ -204,6 +259,7 @@ pub async fn requests(
         match Screen::build(data, &viewer, view, &id).await {
             Ok(next) => {
                 screen = next;
+                retry = fetch_late(data, &screen.late);
                 EditInteractionResponse::new()
                     .components(std::mem::take(&mut screen.components))
                     .embed(std::mem::take(&mut screen.embed))
@@ -226,6 +282,39 @@ pub async fn requests(
 
     // The newest token is the only one guaranteed not to have expired
     remove_buttons(ctx, last).await
+}
+
+/// Details that arrived after [`LIST_WAIT`], by media: `None` if the lookup failed
+type Arrived = HashMap<Media, Option<Details>>;
+
+/// Looks up `late` again with the usual timeout, if there are any
+fn fetch_late<'a>(data: &'a Data, late: &[Media]) -> Option<BoxFuture<'a, Arrived>> {
+    if late.is_empty() {
+        return None;
+    }
+    let late = late.to_vec();
+    Some(Box::pin(async move {
+        join_all(late.into_iter().map(|media| async move {
+            let details = data
+                .seerr
+                .details(&data.http, media)
+                .await
+                .inspect_err(|e| warn!("Fetching {media}: {e:#}"))
+                .ok();
+            (media, details)
+        }))
+        .await
+        .into_iter()
+        .collect()
+    }))
+}
+
+/// What `retry` resolves to, or never if there's none
+async fn arrival(retry: &mut Option<BoxFuture<'_, Arrived>>) -> Arrived {
+    match retry {
+        Some(retry) => retry.await,
+        None => std::future::pending().await,
+    }
 }
 
 /// What a press asks for
@@ -299,6 +388,8 @@ struct Viewer {
     guild: Option<GuildId>,
     /// For looking up members
     discord: Arc<Http>,
+    /// Late details for the next build to use
+    arrived: Mutex<Arrived>,
 }
 
 /// Seerr users' Discord accounts, if they're in each server, shared by every list, card and
@@ -360,6 +451,7 @@ impl Viewer {
             profiles,
             guild: ctx.guild_id(),
             discord: ctx.serenity_context().http.clone(),
+            arrived: Mutex::default(),
         }
     }
 
@@ -372,6 +464,7 @@ impl Viewer {
             profiles: profiles(data).await,
             guild,
             discord,
+            arrived: Mutex::default(),
         }
     }
 
@@ -390,6 +483,27 @@ impl Viewer {
             },
             |id| id.mention().to_string(),
         )
+    }
+
+    /// `media`'s details: those that arrived late if there are any, else looked up. With `wait`,
+    /// `None` if they take longer than that.
+    async fn details(
+        &self,
+        data: &Data,
+        media: Media,
+        wait: Option<Duration>,
+    ) -> Result<Option<Details>> {
+        let arrived = self.arrived.lock().unwrap().remove(&media);
+        if let Some(arrived) = arrived {
+            return arrived
+                .map(Some)
+                .context("Seerr didn't answer in the background either");
+        }
+        let fetch = data.seerr.details(&data.http, media);
+        match wait {
+            Some(wait) => Ok(tokio::time::timeout(wait, fetch).await.ok().transpose()?),
+            None => fetch.await.map(Some),
+        }
     }
 
     /// Whose requests to list: `None` for everyone's
@@ -427,6 +541,8 @@ struct Screen {
     card: Option<Card>,
     /// The requests being confirmed for approval, with their titles
     batch: Vec<(u32, String)>,
+    /// Movies and shows on the page or card whose details took longer than [`LIST_WAIT`]
+    late: Vec<Media>,
 }
 
 impl Screen {
@@ -517,17 +633,20 @@ impl Screen {
                 .await?;
         }
 
-        // Requests don't carry titles, so each one's details are looked up
+        // Requests don't carry titles, so each one's details are looked up. Seerr asks TMDB if
+        // it hasn't lately, so ones that take too long are left for later.
         let details = join_all(listed.requests.iter().map(|r| async move {
             let media = r.media()?;
-            let mut details = data
-                .seerr
-                .details(&data.http, media)
-                .await
-                .inspect_err(|e| warn!("Fetching {media}: {e:#}"))
-                .ok()?;
+            let mut details = match viewer.details(data, media, Some(LIST_WAIT)).await {
+                Ok(Some(details)) => details,
+                Ok(None) => return Some(Err(media)),
+                Err(e) => {
+                    warn!("Fetching {media}: {e:#}");
+                    return None;
+                }
+            };
             check_partial(data, &mut details, media, r.is_4k).await;
-            Some(details)
+            Some(Ok(details))
         }));
         let names = join_all(listed.requests.iter().map(|r| async move {
             match &r.requested_by {
@@ -536,6 +655,14 @@ impl Screen {
             }
         }));
         let (details, names) = tokio::join!(details, names);
+        let late: Vec<Media> = details
+            .iter()
+            .filter_map(|d| d.as_ref()?.as_ref().err().copied())
+            .collect();
+        let details: Vec<Option<Details>> = details
+            .into_iter()
+            .map(|d| d.and_then(Result::ok))
+            .collect();
         let downloads = join_all(
             listed
                 .requests
@@ -560,11 +687,24 @@ impl Screen {
             .zip(downloads)
             .enumerate()
         {
-            let title = details.as_ref().map_or_else(
-                || "Unknown title".to_owned(),
-                |d| seerr::with_year(&d.title, d.release_date.as_deref()),
-            );
-            let label = label(request, details.as_ref(), download);
+            let media = request.media();
+            let is_late = media.is_some_and(|m| late.contains(&m));
+            // Titles seen before stand in for details that are late or failed
+            let title = details
+                .as_ref()
+                .map(|d| (d.title.clone(), d.release_date.clone()))
+                .or_else(|| {
+                    let t = data.seerr.titles.get(media?)?;
+                    Some((t.title, t.release_date))
+                })
+                .map_or_else(
+                    || if is_late { LOADING } else { "Unknown title" }.to_owned(),
+                    |(title, date)| seerr::with_year(&title, date.as_deref()),
+                );
+            let label = match without_details(request) {
+                None if is_late => LOADING.to_owned(),
+                _ => label(request, details.as_ref(), download),
+            };
             let mut line = format!("**{}**{}", escape(&title), seasons(request, " \u{b7} "));
             let mut about = vec![label.clone()];
             about.extend(name);
@@ -646,11 +786,14 @@ impl Screen {
             total,
             card: None,
             batch: Vec::new(),
+            late,
         })
     }
 
     /// A request as a card. `position` is its index in the list and the number listed; without
-    /// one it's a post, with no list to go back to but a refresh button and a link to Seerr.
+    /// one it's a post, with no list to go back to but a refresh button and a link to Seerr. In
+    /// the list, details that take longer than [`LIST_WAIT`] are left for later, showing
+    /// [`Self::loading`] meanwhile, as do ones that failed.
     async fn card(
         data: &Data,
         viewer: &Viewer,
@@ -662,7 +805,22 @@ impl Screen {
         let media = request
             .media()
             .context("request isn't for a movie or show")?;
-        let mut details = data.seerr.details(&data.http, media).await?;
+        let mut details = match position {
+            None => viewer
+                .details(data, media, None)
+                .await?
+                .context("details missing without a wait")?,
+            Some(position) => match viewer.details(data, media, Some(LIST_WAIT)).await {
+                Ok(Some(details)) => details,
+                found => {
+                    let late = found
+                        .inspect_err(|e| warn!("Fetching {media}: {e:#}"))
+                        .is_ok();
+                    let screen = Self::loading(data, viewer, position, request, media, late, id);
+                    return Ok(screen.await);
+                }
+            },
+        };
         check_partial(data, &mut details, media, request.is_4k).await;
         let title = seerr::with_year(&details.title, details.release_date.as_deref());
 
@@ -871,7 +1029,87 @@ impl Screen {
                 request,
             }),
             batch: Vec::new(),
+            late: Vec::new(),
         })
+    }
+
+    /// A card in the list while its details are `late`, or after they failed: what the request
+    /// itself says, its title if it's been seen before, and buttons only to move on or refresh
+    async fn loading(
+        data: &Data,
+        viewer: &Viewer,
+        (index, total): (usize, usize),
+        request: Request,
+        media: Media,
+        late: bool,
+        id: &str,
+    ) -> Self {
+        let title = data.seerr.titles.get(media).map_or_else(
+            || if late { LOADING } else { "Unknown title" }.to_owned(),
+            |t| seerr::with_year(&t.title, t.release_date.as_deref()),
+        );
+        let status = without_details(&request)
+            .unwrap_or_else(|| if late { LOADING } else { UNREACHABLE }.to_owned());
+        let mut embed = CreateEmbed::new()
+            .title(title)
+            .field("Status", status, false);
+        if let Some(url) = data.seerr.page(media) {
+            embed = embed.url(url);
+        }
+        if !request.seasons.is_empty() {
+            embed = embed.field("Seasons", ranges(&request.season_numbers()), true);
+        }
+        if viewer.admin
+            && let Some(by) = &request.requested_by
+        {
+            embed = embed.field("Requested by", viewer.name(data, by).await, true);
+        }
+        if let Some(at) = requested_at(&request) {
+            embed = embed.field("Requested", at, true);
+        }
+        if total > 1 {
+            embed = embed.footer(CreateEmbedFooter::new(format!("{} of {total}", index + 1)));
+        }
+
+        let button = |suffix: &str| CreateButton::new(format!("{id}-{suffix}"));
+        let mut buttons = Vec::new();
+        if total > 1 {
+            buttons.push(
+                button("prev")
+                    .emoji('\u{25c0}')
+                    .style(ButtonStyle::Secondary),
+            );
+        }
+        buttons.push(
+            button("back")
+                .label("All requests")
+                .style(ButtonStyle::Secondary),
+        );
+        buttons.push(
+            button("refresh")
+                .emoji('\u{1f504}')
+                .style(ButtonStyle::Secondary),
+        );
+        if total > 1 {
+            buttons.push(
+                button("next")
+                    .emoji('\u{25b6}')
+                    .style(ButtonStyle::Secondary),
+            );
+        }
+
+        Self {
+            embed,
+            components: vec![CreateActionRow::Buttons(buttons)],
+            view: View::Card {
+                index,
+                id: Some(request.id),
+            },
+            total,
+            card: None,
+            batch: Vec::new(),
+            late: if late { vec![media] } else { Vec::new() },
+        }
     }
 
     /// Asks to confirm approving request `request`'s batch, listing what's in it. `index` is the
@@ -967,6 +1205,7 @@ impl Screen {
             total: 0,
             card: None,
             batch: batch.iter().map(|r| r.id).zip(titles).collect(),
+            late: Vec::new(),
         }))
     }
 }
@@ -981,6 +1220,7 @@ impl Screen {
             total: 0,
             card: None,
             batch: Vec::new(),
+            late: Vec::new(),
         }
     }
 }
@@ -1364,6 +1604,14 @@ fn label(request: &Request, details: Option<&Details>, download: Option<Download
         format!("{label} (4K)")
     } else {
         label.to_owned()
+    }
+}
+
+/// `request`'s status if it can be told without its media's details: all but approved ones
+fn without_details(request: &Request) -> Option<String> {
+    match request.status {
+        RequestStatus::Approved | RequestStatus::Completed => None,
+        _ => Some(label(request, None, None)),
     }
 }
 

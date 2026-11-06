@@ -473,7 +473,7 @@ mod tests {
         commands::requests::Members,
         ersatztv::GuideCache,
         jellyfin::Jellyfin,
-        seerr::{Links, Seerr},
+        seerr::{Links, Seerr, Titles},
     };
 
     /// The Authorization header and body the upstream got
@@ -546,6 +546,7 @@ mod tests {
                 api_key: String::new(),
                 public_url: None,
                 links: Links::default(),
+                titles: Titles::default(),
             },
             radarr: None,
             sonarr: None,

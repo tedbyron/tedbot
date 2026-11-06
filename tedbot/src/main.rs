@@ -144,6 +144,7 @@ async fn run() -> Result<()> {
             api_key: cfg.seerr.api_key,
             public_url: cfg.seerr.public_url,
             links: seerr::Links::default(),
+            titles: seerr::Titles::default(),
         },
         radarr: cfg.radarr.map(|c| arr::Arr {
             url: c.url,

@@ -151,7 +151,17 @@ store):
   time and lists any that failed. Quality is only editable when the request goes
   to the default server, whose profiles are the ones the bot knows. Seerr is
   asked as its admin, so the bot checks `is_admin` itself. Request lists carry
-  no titles, so each row's details are fetched.
+  no titles, so each row's details are fetched; Seerr gets them from TMDB, which
+  can take its whole timeout. A row waits at most 3s (`LIST_WAIT`), then shows
+  its title from `Seerr::titles` (kept from every details lookup, oldest dropped
+  past 2000) and "Loading…" for an approved status. Those are fetched again in
+  the background with the usual timeout and the list rebuilt if any arrive.
+  Opening a card from the list works the same way: past 3s it shows what the
+  request itself says with only ◀ 🔄 ▶ and All requests until its details
+  arrive. What the background lookup gets, failures included, goes to the next
+  build (`Viewer::arrived`) so nothing is asked twice or left loading. One
+  collector stream serves the whole command, so presses made mid-rebuild wait.
+  Request posts still wait for them.
 - **`/streams`** (done): ephemeral, since views differ. Everyone gets the stream
   count, upload in use and who's watching. Admins also get what each stream is
   playing, direct play or transcode, and LAN bitrate. Bitrates count unpaused
@@ -162,15 +172,17 @@ store):
   playing audio track when `TranscodingInfo` is missing (Jellyfin drops it while
   a transcode is throttled). Clients on private IPs count as LAN; Caddy is a
   known proxy, so `RemoteEndPoint` is the real client.
-- **`/tv`** (done): ErsatzTV channels in a single vertical list, 12 per page.
-  With the autocompleted `channel` option, one channel per card with its poster
-  instead: keypad of channel buttons up to 12 channels, ⌨️ jump-to-channel modal
-  beyond that, ◀ 🔄 ▶ always. The guide is cached for 60s and indexed by channel
-  so this scales to ~1000 channels. Button presses are acknowledged before
-  rebuilding (a guide refetch can exceed Discord's 3s limit), and failures show
-  as ephemeral follow-ups. Replies are ephemeral; ephemeral messages can only be
-  edited with an interaction token, which expires after 15 minutes, so buttons
-  time out after 14 and are removed with the newest token.
+- **`/tv`** (done): ErsatzTV channels in a single vertical list, 12 per page,
+  channel bold and what's on plain (description lines, since field names can't
+  be bold). With the autocompleted `channel` option, one channel per card with
+  its poster instead: keypad of channel buttons up to 12 channels, ⌨️
+  jump-to-channel modal beyond that, ◀ 🔄 ▶ always. The guide is cached for 60s
+  and indexed by channel so this scales to ~1000 channels. Button presses are
+  acknowledged before rebuilding (a guide refetch can exceed Discord's 3s
+  limit), and failures show as ephemeral follow-ups. Replies are ephemeral;
+  ephemeral messages can only be edited with an interaction token, which expires
+  after 15 minutes, so buttons time out after 14 and are removed with the newest
+  token.
 - **`/restart <service>`** (done): Jellyfin or tedbot. Admins only. Jellyfin's
   launchd agent is `jellyfin.launchd_label`, by default `org.nixos.jellyfin`.
   `default_member_permissions` hides it from members without Administrator;
