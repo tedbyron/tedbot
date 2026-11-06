@@ -324,7 +324,9 @@ impl Screen {
                     .take(PAGE_SIZE)
                     .map(|channel| {
                         let on = match guide.on_at(channel, &now) {
-                            (Some(p), _) => format!("{} \u{b7} {}", label(p, None, false), times(p)),
+                            (Some(p), _) => {
+                                format!("{} \u{b7} {}", label(p, None, false), times(p))
+                            }
                             (None, _) => "\u{2014}".into(),
                         };
                         format!("**{}**\n{on}", escape(&channel.title()))
