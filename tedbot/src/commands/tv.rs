@@ -265,13 +265,13 @@ impl Screen {
                 let mut description = match current {
                     Some(p) => format!(
                         "{}\n{}",
-                        label(p, director(data, p).await.as_deref()),
+                        label(p, director(data, p).await.as_deref(), true),
                         times(p)
                     ),
                     None => "Nothing on".into(),
                 };
                 if let Some(p) = next {
-                    let label = label(p, director(data, p).await.as_deref());
+                    let label = label(p, director(data, p).await.as_deref(), true);
                     description = format!("{description}\n\nNext: {label}");
                 }
 
@@ -316,21 +316,23 @@ impl Screen {
             Mode::List => {
                 let pages = channels.div_ceil(PAGE_SIZE);
                 let page = found.map_or_else(|i| i % pages, |i| i / PAGE_SIZE);
-                let mut embed = guide
+                // Lines rather than fields, since field names can't be bold
+                let lines: Vec<String> = guide
                     .channels
                     .iter()
                     .skip(page * PAGE_SIZE)
                     .take(PAGE_SIZE)
-                    .fold(
-                        CreateEmbed::new().timestamp(Timestamp::now()),
-                        |embed, channel| {
-                            let value = match guide.on_at(channel, &now) {
-                                (Some(p), _) => format!("{} \u{b7} {}", label(p, None), times(p)),
-                                (None, _) => "\u{2014}".into(),
-                            };
-                            embed.field(channel.title(), value, false)
-                        },
-                    );
+                    .map(|channel| {
+                        let on = match guide.on_at(channel, &now) {
+                            (Some(p), _) => format!("{} \u{b7} {}", label(p, None, false), times(p)),
+                            (None, _) => "\u{2014}".into(),
+                        };
+                        format!("**{}**\n{on}", escape(&channel.title()))
+                    })
+                    .collect();
+                let mut embed = CreateEmbed::new()
+                    .description(lines.join("\n\n"))
+                    .timestamp(Timestamp::now());
                 if pages > 1 {
                     embed = embed.footer(CreateEmbedFooter::new(format!(
                         "Page {} of {pages}",
@@ -476,9 +478,10 @@ fn surname(name: &str) -> String {
     words[rest.len() - particles..].join(" ")
 }
 
-/// **Title** S01 E02, or **Title** (Director, 1995) for movies
-fn label(p: &Program, director: Option<&str>) -> String {
-    let title = format!("**{}**", escape(&p.title.value));
+/// Title S01 E02, or Title (Director, 1995) for movies, with the title `bold` on channel cards
+fn label(p: &Program, director: Option<&str>, bold: bool) -> String {
+    let title = escape(&p.title.value);
+    let title = if bold { format!("**{title}**") } else { title };
     if let Some(episode) = p.episode() {
         return format!("{title} {episode}");
     }
