@@ -47,6 +47,8 @@ pub struct Data {
     admins: Vec<serenity::UserId>,
     /// Seerr users' Discord accounts in each server, as looked up lately
     members: commands::requests::Members,
+    /// The default servers' quality profiles, as fetched lately
+    profiles: commands::requests::ProfileCache,
 }
 /// How long an HTTP request may take to connect, to Discord or upstream services
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -164,6 +166,7 @@ async fn run() -> Result<()> {
         }),
         admins: cfg.discord.admins,
         members: commands::requests::Members::default(),
+        profiles: commands::requests::ProfileCache::default(),
     };
     let framework = Framework::builder()
         .setup(move |ctx, ready, framework| {

@@ -11,7 +11,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -118,7 +121,7 @@ pub async fn requests(
     let admin = is_admin(ctx);
 
     let id = ctx.id().to_string();
-    let viewer = Viewer::load(ctx, Some(user), admin, status.unwrap_or_default()).await;
+    let viewer = Viewer::load(ctx, Some(user), admin, status.unwrap_or_default());
     let mut screen = Screen::build(data, &viewer, View::List { page: 0 }, &id).await?;
     if screen.total == 0 {
         let what = match viewer.filter {
@@ -382,8 +385,9 @@ struct Viewer {
     /// Whether the invoker is a bot admin, who sees everyone's requests and may act on them
     admin: bool,
     filter: Filter,
-    /// The default HD and 4K servers' movie and show quality profiles, admins only
-    profiles: Vec<Profiles>,
+    /// The default HD and 4K servers' movie and show quality profiles, admins only, fetched
+    /// when a card first needs them
+    profiles: OnceCell<Vec<Profiles>>,
     /// The server the command was used in, whose members show by their Discord account
     guild: Option<GuildId>,
     /// For looking up members
@@ -437,18 +441,12 @@ impl Members {
 }
 
 impl Viewer {
-    /// Fetches the quality profiles for admins. Without them, there's no quality menu.
-    async fn load(ctx: Context<'_>, user: Option<Requester>, admin: bool, filter: Filter) -> Self {
-        let profiles = if admin {
-            profiles(ctx.data()).await
-        } else {
-            Vec::new()
-        };
+    fn load(ctx: Context<'_>, user: Option<Requester>, admin: bool, filter: Filter) -> Self {
         Self {
             user,
             admin,
             filter,
-            profiles,
+            profiles: OnceCell::new(),
             guild: ctx.guild_id(),
             discord: ctx.serenity_context().http.clone(),
             arrived: Mutex::default(),
@@ -456,12 +454,12 @@ impl Viewer {
     }
 
     /// An admin's view, for request posts in `guild`'s channels, which only admins can act on
-    async fn post(data: &Data, discord: Arc<Http>, guild: Option<GuildId>) -> Self {
+    fn post(discord: Arc<Http>, guild: Option<GuildId>) -> Self {
         Self {
             user: None,
             admin: true,
             filter: Filter::All,
-            profiles: profiles(data).await,
+            profiles: OnceCell::new(),
             guild,
             discord,
             arrived: Mutex::default(),
@@ -516,10 +514,14 @@ impl Viewer {
     }
 
     /// The profiles `request` can be changed between: the default HD or 4K server's, if that's
-    /// where it's going
-    fn profiles(&self, request: &Request) -> Option<&Profiles> {
+    /// where it's going. Admins only; without them there's no quality menu.
+    async fn profiles(&self, data: &Data, request: &Request) -> Option<&Profiles> {
+        if !self.admin {
+            return None;
+        }
         let movies = matches!(request.media()?, Media::Movie(_));
-        self.profiles.iter().find(|p| {
+        let all = self.profiles.get_or_init(|| profiles(data)).await;
+        all.iter().find(|p| {
             p.movies == movies
                 && p.is_4k == request.is_4k
                 && request.server_id.is_none_or(|s| s == p.server)
@@ -855,7 +857,7 @@ impl Screen {
         {
             embed = embed.field(heading, viewer.name(data, by).await, true);
         }
-        let profiles = viewer.profiles(&request);
+        let profiles = viewer.profiles(data, &request).await;
         if viewer.admin {
             let quality = request.profile_id.map_or_else(
                 || "Default".into(),
@@ -1244,6 +1246,7 @@ impl Card {
     /// Does `action` if the card allows it, returning what to tell the invoker, if anything. A
     /// change that worked shows on the card instead.
     async fn act(&self, data: &Data, viewer: &Viewer, action: Action) -> Option<String> {
+        let editable = viewer.profiles(data, &self.request).await.is_some();
         let result = match action {
             Action::Go(_) => return None,
             Action::Cancel if !self.cancellable.is_empty() => {
@@ -1262,9 +1265,7 @@ impl Card {
                     .review(&data.http, self.request.id, approve)
                     .await
             }
-            Action::Quality(profile)
-                if self.reviewable && viewer.profiles(&self.request).is_some() =>
-            {
+            Action::Quality(profile) if self.reviewable && editable => {
                 let seasons = self.request.season_numbers();
                 data.seerr
                     .edit(&data.http, &self.request, profile, &seasons)
@@ -1291,11 +1292,22 @@ impl Card {
 /// The default HD and 4K servers' movie and show quality profiles, for admins to change
 /// requests between and for requesting
 pub(super) async fn profiles(data: &Data) -> Vec<Profiles> {
+    let mut cached = data.profiles.0.lock().await;
+    if let Some((at, profiles)) = &*cached
+        && at.elapsed() < PROFILES_TTL
+    {
+        return profiles.clone();
+    }
+    let ok = AtomicBool::new(true);
+    let ok = &ok;
     let profiles = |media, is_4k| async move {
         data.seerr
             .profiles(&data.http, media, is_4k)
             .await
-            .inspect_err(|e| warn!("Fetching quality profiles: {e:#}"))
+            .inspect_err(|e| {
+                warn!("Fetching quality profiles: {e:#}");
+                ok.store(false, Ordering::Relaxed);
+            })
             .ok()
             .flatten()
     };
@@ -1306,8 +1318,22 @@ pub(super) async fn profiles(data: &Data) -> Vec<Profiles> {
         profiles(Media::Tv(0), true),
     )
     .into();
-    all.into_iter().flatten().collect()
+    let profiles: Vec<Profiles> = all.into_iter().flatten().collect();
+    // Not kept if any failed, so the next call tries again
+    if ok.load(Ordering::Relaxed) {
+        *cached = Some((Instant::now(), profiles.clone()));
+    }
+    profiles
 }
+
+/// How long [`ProfileCache`] keeps the profiles. They only change when servers are set up in
+/// Seerr, and Seerr asks Radarr and Sonarr for them each time, which can take a second.
+const PROFILES_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// The last [`profiles`] fetched in full, and when. Callers asking at the same time wait for the
+/// one fetch.
+#[derive(Debug, Default)]
+pub struct ProfileCache(tokio::sync::Mutex<Option<(Instant, Vec<Profiles>)>>);
 
 /// `request` as a post in `guild`'s channels, with buttons for admins
 pub async fn post_card(
@@ -1316,7 +1342,7 @@ pub async fn post_card(
     guild: Option<GuildId>,
     request: Request,
 ) -> Result<(CreateEmbed, Vec<CreateActionRow>)> {
-    let viewer = Viewer::post(data, discord, guild).await;
+    let viewer = Viewer::post(discord, guild);
     let id = format!("{POST}{}", request.id);
     let screen = Screen::card(data, &viewer, None, request, &id).await?;
     Ok((screen.embed, screen.components))
@@ -1423,7 +1449,7 @@ pub async fn post_press(
                 ),
             )
             .await?;
-        let viewer = Viewer::post(data, ctx.http.clone(), press.guild_id).await;
+        let viewer = Viewer::post(ctx.http.clone(), press.guild_id);
         let edit = match Screen::batch(data, &viewer, None, request, &id).await {
             Ok(Some(screen)) => EditInteractionResponse::new()
                 .embed(screen.embed)
@@ -1443,7 +1469,7 @@ pub async fn post_press(
     press
         .create_response(ctx, CreateInteractionResponse::Acknowledge)
         .await?;
-    let viewer = Viewer::post(data, ctx.http.clone(), press.guild_id).await;
+    let viewer = Viewer::post(ctx.http.clone(), press.guild_id);
 
     // Pressed on the batch confirmation, which then says how it went
     if action == "approve-all" {

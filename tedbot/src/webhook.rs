@@ -470,7 +470,7 @@ mod tests {
         );
     }
     use crate::{
-        commands::requests::Members,
+        commands::requests::{Members, ProfileCache},
         ersatztv::GuideCache,
         jellyfin::Jellyfin,
         seerr::{Links, Seerr, Titles},
@@ -554,6 +554,7 @@ mod tests {
             sonarr_4k: None,
             admins: Vec::new(),
             members: Members::default(),
+            profiles: ProfileCache::default(),
         };
         listener.spawn(Arc::new(Http::new("")), Arc::new(data));
 
