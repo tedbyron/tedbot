@@ -1,7 +1,7 @@
 //! `/restart`: restarts Jellyfin, or the bot itself if it can, for admins only.
 //!
 //! Discord hides it from members without Administrator unless the server's Integrations settings
-//! give the admin role access too; the bot checks the role itself either way. Asks to confirm with
+//! give admins access too; either way the bot only lets `discord.admins` restart. Asks to confirm with
 //! what it would interrupt, then waits for Jellyfin's health check to pass again. Jellyfin restarts
 //! with its configured restart command, or else restarts itself. The bot restarts however it was
 //! given ([`crate::RestartBot`]).
@@ -30,7 +30,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// What `/restart` can restart
 #[derive(Clone, Copy, Debug, ChoiceParameter)]
-pub(crate) enum Service {
+enum Service {
     #[name = "Jellyfin"]
     Jellyfin,
     #[name = "This bot"]
@@ -68,7 +68,7 @@ impl Service {
     guild_only,
     default_member_permissions = "ADMINISTRATOR"
 )]
-pub(crate) async fn restart<U: Data, E: From<Error>>(
+pub async fn restart<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     #[description = "Service to restart"] service: Service,
 ) -> Result<(), E> {

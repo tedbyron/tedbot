@@ -22,8 +22,9 @@ home media server.
   `poise_jellyfin::handle_event`, and starts the webhook (`Listener`) in `setup`
   once the gateway is ready. Its data is `MediaServer`, which holds its state in
   an `Arc`, so clones (one for the webhook) share it. The commands rely on their
-  `linked` check, so poise's `skip_checks_for_owners` isn't supported
-  (`handle_event` fails on `Ready` if it's set).
+  `linked` check, so poise's `skip_checks_for_owners` isn't supported: tedbot
+  refuses to start with it, and `handle_event` returns an error on `Ready` if
+  it's set (poise only hands that to `on_error`, so it doesn't stop the bot).
 - Config is read from `$TEDBOT_CONFIG`, falling back to `config.toml` in the
   working directory (gitignored; see `config.example.toml`). Secrets go there,
   never in the repo.
@@ -35,8 +36,11 @@ home media server.
   licenses and sources; advisories need the network, so run `cargo deny check`
   in the devShell), sharing one dependency build.
 - Lints are set once in the workspace `Cargo.toml` (`[workspace.lints]`),
-  including `missing_docs` and `unreachable_pub`: items in private modules are
-  `pub(crate)`.
+  including `missing_docs` and clippy's nursery. Items are private unless
+  another module uses them; those are plain `pub` in private modules, since the
+  module already keeps them in the crate (clippy's `redundant_pub_crate`).
+  `pub(crate)` is only for internal items on the public API, like
+  `Error::seerr`.
 - Caches (the guide, quality profiles, who linked what, titles, members) are
   `moka` caches, whose `try_get_with` makes concurrent callers share one fetch
   and keeps no failures.
@@ -177,7 +181,7 @@ store):
   itself. Request lists carry no titles, so each row's details are fetched;
   Seerr gets them from TMDB, which can take its whole timeout. A row waits at
   most 3s (`LIST_WAIT`), then shows its title from `Seerr::titles` (kept from
-  every details lookup, oldest dropped past 2000) and "Loading…" for an approved
+  every details lookup, least recently used dropped past 2000) and "Loading…" for an approved
   status. Those are fetched again in the background with the usual timeout and
   the list rebuilt if any arrive. Opening a card from the list works the same
   way: past 3s it shows what the request itself says with only ◀ 🔄 ▶ and All

@@ -8,7 +8,7 @@ use tracing_subscriber::filter::LevelFilter;
 
 /// Bot config
 #[derive(Debug, Deserialize)]
-pub(crate) struct Config {
+pub struct Config {
     /// Log level: `off`, `error`, `warn` (default), `info`, `debug` or `trace`. `RUST_LOG`
     /// overrides it.
     #[serde(default = "default_log_level", deserialize_with = "level")]
@@ -22,7 +22,7 @@ pub(crate) struct Config {
 
 /// Discord connection info
 #[derive(Debug, Deserialize)]
-pub(crate) struct DiscordConfig {
+pub struct DiscordConfig {
     /// Bot token from the Discord developer portal
     pub token: String,
     /// User ids of the media server's admins, in every server, pinged for requests waiting for
@@ -36,7 +36,7 @@ pub(crate) struct DiscordConfig {
 /// Bot status line, e.g. "Listening to /commands". Nothing is shown unless both `type` and `name`
 /// are set.
 #[derive(Debug, Deserialize)]
-pub(crate) struct DiscordActivityConfig {
+pub struct DiscordActivityConfig {
     /// `competing`, `listening`, `playing`, `streaming` or `watching`
     #[serde(rename = "type")]
     pub r#type: Option<String>,

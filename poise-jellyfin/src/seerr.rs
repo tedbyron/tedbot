@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
 
-use moka::{future::Cache, sync::Cache as SyncCache};
+use moka::{future::Cache, policy::EvictionPolicy, sync::Cache as SyncCache};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use poise::serenity_prelude::UserId;
 use reqwest::StatusCode;
@@ -13,7 +13,7 @@ use crate::{Error, Result};
 /// Where to reach Seerr and how to authenticate. The HTTP client is passed in per call so the bot
 /// shares one connection pool.
 #[derive(Clone)]
-pub(crate) struct Seerr {
+pub struct Seerr {
     pub url: String,
     pub api_key: String,
     /// Address people open in a browser, for links. `None` leaves links out.
@@ -42,7 +42,7 @@ type Linked = Arc<HashMap<UserId, Requester>>;
 
 /// Who linked what, as fetched within [`LINKS_TTL`]
 #[derive(Clone, Debug)]
-pub(crate) struct Links(Cache<(), Linked>);
+pub struct Links(Cache<(), Linked>);
 
 impl Default for Links {
     fn default() -> Self {
@@ -55,19 +55,25 @@ const TITLES_MAX: u64 = 2000;
 
 /// Titles and release dates of movies and shows Seerr has looked up, which don't change. Seerr
 /// gets them from TMDB and keeps them only for a while, so a lookup can take as long as TMDB does.
-/// The least used go once there are [`TITLES_MAX`].
+/// The least recently used go once there are [`TITLES_MAX`]. LRU rather than moka's default
+/// TinyLFU, which can turn away a title seen once when full, and the newest are the most needed.
 #[derive(Clone, Debug)]
-pub(crate) struct Titles(SyncCache<Media, Title>);
+pub struct Titles(SyncCache<Media, Title>);
 
 impl Default for Titles {
     fn default() -> Self {
-        Self(SyncCache::new(TITLES_MAX))
+        Self(
+            SyncCache::builder()
+                .max_capacity(TITLES_MAX)
+                .eviction_policy(EvictionPolicy::lru())
+                .build(),
+        )
     }
 }
 
 /// A title as [`Titles`] keeps it
 #[derive(Clone, Debug)]
-pub(crate) struct Title {
+pub struct Title {
     pub title: String,
     /// `YYYY-MM-DD`, if known
     pub release_date: Option<String>,
@@ -75,7 +81,7 @@ pub(crate) struct Title {
 
 impl Titles {
     /// `media`'s title, if it's been looked up
-    pub(crate) fn get(&self, media: Media) -> Option<Title> {
+    pub fn get(&self, media: Media) -> Option<Title> {
         self.0.get(&media)
     }
 
@@ -123,7 +129,7 @@ const REQUEST_4K_TV: u32 = 4096;
 
 /// The Seerr user a request is made as
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Requester {
+pub struct Requester {
     pub id: u32,
     /// Permission bits
     permissions: u32,
@@ -136,12 +142,12 @@ impl Requester {
     }
 
     /// Whether Seerr lets them skip their quota
-    pub(crate) const fn can_bypass_quota(self) -> bool {
+    pub const fn can_bypass_quota(self) -> bool {
         self.has_any(MANAGE_REQUESTS)
     }
 
     /// Whether Seerr lets them request `media` in 4K
-    pub(crate) const fn can_request_4k(self, media: Media) -> bool {
+    pub const fn can_request_4k(self, media: Media) -> bool {
         self.has_any(match media {
             Media::Movie(_) => REQUEST_4K | REQUEST_4K_MOVIE,
             Media::Tv(_) => REQUEST_4K | REQUEST_4K_TV,
@@ -151,7 +157,7 @@ impl Requester {
 
 /// Response of `GET /api/v1/user/{id}/quota`
 #[derive(Debug, Deserialize)]
-pub(crate) struct Quotas {
+pub struct Quotas {
     pub movie: Quota,
     /// Counted in seasons
     pub tv: Quota,
@@ -159,7 +165,7 @@ pub(crate) struct Quotas {
 
 /// How many requests a user has left
 #[derive(Debug, Deserialize)]
-pub(crate) struct Quota {
+pub struct Quota {
     /// Over this many days. 0 means forever.
     #[serde(default)]
     pub days: u32,
@@ -187,14 +193,14 @@ struct ServerDetails {
 
 /// A quality profile
 #[derive(Clone, Debug, Deserialize)]
-pub(crate) struct Profile {
+pub struct Profile {
     pub id: u32,
     pub name: String,
 }
 
 /// The quality profiles on a Radarr or Sonarr server
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Profiles {
+pub struct Profiles {
     /// Seerr's id for the server, unique among the Radarrs or the Sonarrs
     pub server: u32,
     /// Whether it's the server for movies (Radarr) rather than shows (Sonarr)
@@ -206,7 +212,7 @@ pub(crate) struct Profiles {
 
 impl Profiles {
     /// Profile `id`'s name
-    pub(crate) fn name(&self, id: u32) -> Option<&str> {
+    pub fn name(&self, id: u32) -> Option<&str> {
         self.list
             .iter()
             .find(|p| p.id == id)
@@ -239,7 +245,7 @@ struct Search {
 /// One search result. People and collections can't be requested, so they're [`Self::Other`].
 #[derive(Debug, Deserialize)]
 #[serde(tag = "mediaType", rename_all = "lowercase")]
-pub(crate) enum SearchResult {
+pub enum SearchResult {
     #[serde(rename_all = "camelCase")]
     Movie {
         /// TMDB id
@@ -262,7 +268,7 @@ pub(crate) enum SearchResult {
 
 impl SearchResult {
     /// The movie or show this result is, `None` for people and collections
-    pub(crate) const fn media(&self) -> Option<Media> {
+    pub const fn media(&self) -> Option<Media> {
         match *self {
             Self::Movie { id, .. } => Some(Media::Movie(id)),
             Self::Tv { id, .. } => Some(Media::Tv(id)),
@@ -271,7 +277,7 @@ impl SearchResult {
     }
 
     /// "Title (2022)"
-    pub(crate) fn label(&self) -> String {
+    pub fn label(&self) -> String {
         match self {
             Self::Movie {
                 title,
@@ -290,7 +296,7 @@ impl SearchResult {
 
 /// A movie or show by TMDB id
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Media {
+pub enum Media {
     Movie(u32),
     Tv(u32),
 }
@@ -341,7 +347,7 @@ impl std::str::FromStr for Media {
 /// `name` and `firstAirDate` are read into the movie field names.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Details {
+pub struct Details {
     #[serde(alias = "name")]
     pub title: String,
     /// `YYYY-MM-DD`, empty or absent if unknown
@@ -352,7 +358,7 @@ pub(crate) struct Details {
     pub poster_path: Option<String>,
     /// Seasons TMDB knows of, shows only
     #[serde(default)]
-    pub seasons: Vec<Season>,
+    seasons: Vec<Season>,
     /// What Seerr knows, absent if it's never been requested or seen in Jellyfin
     pub media_info: Option<MediaInfo>,
 }
@@ -360,40 +366,40 @@ pub(crate) struct Details {
 /// A season as TMDB lists it
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Season {
+struct Season {
     /// 0 for specials
-    pub season_number: u32,
-    pub episode_count: u32,
+    season_number: u32,
+    episode_count: u32,
 }
 
 /// Seerr's own record of a movie or show
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct MediaInfo {
+pub struct MediaInfo {
     /// Shows only, once Seerr has looked it up
     pub tvdb_id: Option<u32>,
-    pub status: Status,
+    status: Status,
     /// The 4K copy's
     #[serde(default)]
-    pub status_4k: Status,
+    status_4k: Status,
     /// Jellyfin page, once it's available
-    pub media_url: Option<String>,
-    pub media_url_4k: Option<String>,
+    media_url: Option<String>,
+    media_url_4k: Option<String>,
     /// Jellyfin item id, once it's available
-    pub jellyfin_media_id: Option<String>,
-    pub jellyfin_media_id_4k: Option<String>,
+    jellyfin_media_id: Option<String>,
+    jellyfin_media_id_4k: Option<String>,
     /// Per-season status, shows only
     #[serde(default)]
     pub seasons: Vec<SeasonInfo>,
     #[serde(default)]
-    pub requests: Vec<Request>,
+    requests: Vec<Request>,
 }
 
 /// A season's status
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SeasonInfo {
-    pub season_number: u32,
+pub struct SeasonInfo {
+    season_number: u32,
     pub status: Status,
     /// The 4K copy's
     #[serde(default)]
@@ -403,12 +409,12 @@ pub(crate) struct SeasonInfo {
 /// A request for a movie or some seasons of a show
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Request {
+pub struct Request {
     pub id: u32,
     pub status: RequestStatus,
     pub is_4k: bool,
     /// What was requested. Absent when listed under the media itself.
-    pub media: Option<RequestMedia>,
+    media: Option<RequestMedia>,
     /// When it was made, RFC 3339
     pub created_at: Option<String>,
     /// Who made it
@@ -423,25 +429,25 @@ pub(crate) struct Request {
     pub server_id: Option<u32>,
     /// Quality profile, `None` for the server's default
     pub profile_id: Option<u32>,
-    pub root_folder: Option<String>,
+    root_folder: Option<String>,
     /// Sonarr only
-    pub language_profile_id: Option<u32>,
-    pub tags: Option<Vec<u32>>,
+    language_profile_id: Option<u32>,
+    tags: Option<Vec<u32>>,
 }
 
 /// The movie or show a request is for
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RequestMedia {
+struct RequestMedia {
     /// TMDB id
-    pub tmdb_id: u32,
+    tmdb_id: u32,
     /// `movie` or `tv`
-    pub media_type: String,
+    media_type: String,
 }
 
 impl Request {
     /// The movie or show it's for, if Seerr said
-    pub(crate) fn media(&self) -> Option<Media> {
+    pub fn media(&self) -> Option<Media> {
         let media = self.media.as_ref()?;
         match media.media_type.as_str() {
             "movie" => Some(Media::Movie(media.tmdb_id)),
@@ -452,13 +458,13 @@ impl Request {
 
     /// Whether it was approved, or declined, by the requester's own permissions rather than by
     /// someone else
-    pub(crate) fn automatic(&self) -> bool {
+    pub fn automatic(&self) -> bool {
         let id = |by: &Option<RequestedBy>| by.as_ref().map(|by| by.id);
         id(&self.modified_by).is_some() && id(&self.modified_by) == id(&self.requested_by)
     }
 
     /// Requested season numbers, shows only
-    pub(crate) fn season_numbers(&self) -> Vec<u32> {
+    pub fn season_numbers(&self) -> Vec<u32> {
         self.seasons.iter().map(|s| s.season_number).collect()
     }
 }
@@ -466,7 +472,7 @@ impl Request {
 /// A user a request refers to
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RequestedBy {
+pub struct RequestedBy {
     /// Seerr's user id
     pub id: u32,
     pub display_name: Option<String>,
@@ -489,7 +495,7 @@ struct PageInfo {
 
 /// One page of requests
 #[derive(Debug)]
-pub(crate) struct RequestPage {
+pub struct RequestPage {
     /// Requests matching, across every page
     pub total: u32,
     pub requests: Vec<Request>,
@@ -498,14 +504,14 @@ pub(crate) struct RequestPage {
 /// One season of a show request
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RequestSeason {
-    pub season_number: u32,
+pub struct RequestSeason {
+    season_number: u32,
 }
 
 /// Where a movie or season stands. Seerr's unknown and deleted are both [`Self::Missing`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(from = "u8")]
-pub(crate) enum Status {
+pub enum Status {
     /// Not requested, or deleted since
     #[default]
     Missing,
@@ -534,7 +540,7 @@ impl From<u8> for Status {
 /// A request's own status, separate from the media's
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(from = "u8")]
-pub(crate) enum RequestStatus {
+pub enum RequestStatus {
     Pending,
     Approved,
     Declined,
@@ -556,7 +562,7 @@ impl From<u8> for RequestStatus {
 
 impl MediaInfo {
     /// The Jellyfin page of the HD or 4K copy
-    pub(crate) fn jellyfin_url(&self, is_4k: bool) -> Option<&str> {
+    pub fn jellyfin_url(&self, is_4k: bool) -> Option<&str> {
         if is_4k {
             self.media_url_4k.as_deref()
         } else {
@@ -566,7 +572,7 @@ impl MediaInfo {
 
     /// The HD or 4K copy's page in Moonfin Web, which the Moonfin plugin serves on the Jellyfin
     /// server that [`Self::jellyfin_url`] points to
-    pub(crate) fn moonfin_url(&self, is_4k: bool) -> Option<String> {
+    pub fn moonfin_url(&self, is_4k: bool) -> Option<String> {
         let (server, _) = self.jellyfin_url(is_4k)?.split_once("/web/")?;
         let id = if is_4k {
             &self.jellyfin_media_id_4k
@@ -579,12 +585,12 @@ impl MediaInfo {
 
 impl Details {
     /// Where the movie, or the whole show, stands
-    pub(crate) fn status(&self) -> Status {
+    pub fn status(&self) -> Status {
         self.status_of(false)
     }
 
     /// Where the HD or 4K copy of the movie, or the whole show, stands
-    pub(crate) fn status_of(&self, is_4k: bool) -> Status {
+    pub fn status_of(&self, is_4k: bool) -> Status {
         self.media_info.as_ref().map_or(
             Status::Missing,
             |m| {
@@ -594,7 +600,7 @@ impl Details {
     }
 
     /// Seasons that can be requested, in order: not specials, not empty
-    pub(crate) fn season_numbers(&self) -> impl Iterator<Item = u32> {
+    pub fn season_numbers(&self) -> impl Iterator<Item = u32> {
         self.seasons
             .iter()
             .filter(|s| s.season_number > 0 && s.episode_count > 0)
@@ -604,7 +610,7 @@ impl Details {
     /// Requests the viewer may cancel: ones waiting for approval or approved but not downloaded
     /// yet (in the copy they asked for, HD or 4K), not even in part. As `admin`, anyone's;
     /// otherwise only Seerr user `user`'s own. Declined requests are left out.
-    pub(crate) fn cancellable(&self, user: Option<u32>, admin: bool) -> Vec<Cancellable> {
+    pub fn cancellable(&self, user: Option<u32>, admin: bool) -> Vec<Cancellable> {
         let Some(info) = &self.media_info else {
             return Vec::new();
         };
@@ -636,7 +642,7 @@ impl Details {
 
     /// Whether the approved request covering season `n`, or the movie with `None`, was approved
     /// automatically rather than by someone else. `false` if no approved request covers it.
-    pub(crate) fn auto_approved(&self, n: Option<u32>, is_4k: bool) -> bool {
+    pub fn auto_approved(&self, n: Option<u32>, is_4k: bool) -> bool {
         self.media_info
             .iter()
             .flat_map(|m| &m.requests)
@@ -647,7 +653,7 @@ impl Details {
 
     /// Where what `request` asked for stands: the movie, or the request's seasons together, in
     /// HD or 4K as it asked
-    pub(crate) fn request_status(&self, request: &Request) -> Status {
+    pub fn request_status(&self, request: &Request) -> Status {
         if request.seasons.is_empty() {
             return self.status_of(request.is_4k);
         }
@@ -673,13 +679,13 @@ impl Details {
 
     /// Where season `n` stands. Like Seerr, a season in an open (not declined or completed)
     /// request counts as requested even if its own status hasn't caught up.
-    pub(crate) fn season_status(&self, n: u32) -> Status {
+    pub fn season_status(&self, n: u32) -> Status {
         self.season_status_of(n, false)
     }
 
     /// Counts `seasons` of the HD or 4K version as downloaded where Seerr has them as partly
     /// downloaded
-    pub(crate) fn mark_downloaded(&mut self, seasons: &[u32], is_4k: bool) {
+    pub fn mark_downloaded(&mut self, seasons: &[u32], is_4k: bool) {
         let Some(info) = &mut self.media_info else {
             return;
         };
@@ -700,7 +706,7 @@ impl Details {
     }
 
     /// Where the HD or 4K copy of season `n` stands, as [`Self::season_status`]
-    pub(crate) fn season_status_of(&self, n: u32, is_4k: bool) -> Status {
+    pub fn season_status_of(&self, n: u32, is_4k: bool) -> Status {
         let Some(info) = &self.media_info else {
             return Status::Missing;
         };
@@ -747,7 +753,7 @@ struct NewRequest<'a> {
 
 /// What to request beyond the movie or show itself
 #[derive(Debug, Default)]
-pub(crate) struct Options<'a> {
+pub struct Options<'a> {
     /// Seasons, shows only
     pub seasons: &'a [u32],
     /// Quality profile on the default (HD or 4K) server, `None` for Seerr's choice
@@ -766,7 +772,7 @@ struct ErrorBody {
 
 /// A request the viewer may cancel, and what cancelling it involves
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Cancellable {
+pub struct Cancellable {
     pub id: u32,
     /// Approved, so it's been sent to Radarr or Sonarr and has to come out of there
     pub sent: bool,
@@ -778,7 +784,7 @@ pub(crate) struct Cancellable {
 
 /// What came of changing a request: cancelling, approving, declining or editing it
 #[derive(Debug)]
-pub(crate) enum Changed {
+pub enum Changed {
     Done,
     /// Seerr said no, e.g. because it's been approved since. The message is Seerr's.
     Refused(String),
@@ -801,7 +807,7 @@ struct EditRequest<'a> {
 
 /// What came of a request
 #[derive(Debug)]
-pub(crate) enum Requested {
+pub enum Requested {
     Made,
     /// Seerr said no, e.g. over permissions, quota, or a duplicate. The message is Seerr's.
     Refused(String),
@@ -819,18 +825,14 @@ impl Seerr {
     }
 
     /// Seerr's web page for `media`, if [`Self::public_url`] is set
-    pub(crate) fn page(&self, media: Media) -> Option<String> {
+    pub fn page(&self, media: Media) -> Option<String> {
         self.public_url
             .as_deref()
             .map(|url| format!("{}{}", url.trim_end_matches('/'), media.path()))
     }
 
     /// The first nonzero Discord id in the notification settings of Seerr user `id`
-    pub(crate) async fn discord_id(
-        &self,
-        http: &reqwest::Client,
-        id: u32,
-    ) -> Result<Option<UserId>> {
+    pub async fn discord_id(&self, http: &reqwest::Client, id: u32) -> Result<Option<UserId>> {
         let detail: UserDetail = self
             .get(http, &format!("/user/{id}"))
             .send()
@@ -862,7 +864,7 @@ impl Seerr {
 
     /// The Discord account each of `jellyfin_ids` linked in Seerr, keyed by Jellyfin user id.
     /// Users without a Seerr account or Discord id are left out.
-    pub(crate) async fn discord_ids(
+    pub async fn discord_ids(
         &self,
         http: &reqwest::Client,
         jellyfin_ids: &[&str],
@@ -884,7 +886,7 @@ impl Seerr {
 
     /// The Seerr user who put `discord` in their notification settings, if any. Every command
     /// and autocomplete asks, so who linked what is fetched at most once per [`LINKS_TTL`].
-    pub(crate) async fn user_for(
+    pub async fn user_for(
         &self,
         http: &reqwest::Client,
         discord: UserId,
@@ -896,7 +898,7 @@ impl Seerr {
 
     /// Fetches who linked what now, whatever its age, returning how many Seerr users linked a
     /// Discord account
-    pub(crate) async fn refresh_links(&self, http: &reqwest::Client) -> Result<usize> {
+    pub async fn refresh_links(&self, http: &reqwest::Client) -> Result<usize> {
         let fetched = self.fetch_links(http).await?;
         let count = fetched.len();
         self.links.0.insert((), Arc::new(fetched)).await;
@@ -918,7 +920,7 @@ impl Seerr {
     }
 
     /// How many requests Seerr user `id` has left
-    pub(crate) async fn quotas(&self, http: &reqwest::Client, id: u32) -> Result<Quotas> {
+    pub async fn quotas(&self, http: &reqwest::Client, id: u32) -> Result<Quotas> {
         Ok(self
             .get(http, &format!("/user/{id}/quota"))
             .send()
@@ -930,7 +932,7 @@ impl Seerr {
 
     /// Quality profiles on the default HD or 4K server for `media`, which is where a request
     /// without a server goes. `None` if there's no such server.
-    pub(crate) async fn profiles(
+    pub async fn profiles(
         &self,
         http: &reqwest::Client,
         media: Media,
@@ -963,11 +965,7 @@ impl Seerr {
     }
 
     /// Movies and shows matching `query`, best match first. One page, so at most 20.
-    pub(crate) async fn search(
-        &self,
-        http: &reqwest::Client,
-        query: &str,
-    ) -> Result<Vec<SearchResult>> {
+    pub async fn search(&self, http: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>> {
         let search: Search = self
             .get(http, &format!("/search?query={}&page=1", encode(query)))
             .send()
@@ -983,7 +981,7 @@ impl Seerr {
     }
 
     /// A movie or show's details and where it stands
-    pub(crate) async fn details(&self, http: &reqwest::Client, media: Media) -> Result<Details> {
+    pub async fn details(&self, http: &reqwest::Client, media: Media) -> Result<Details> {
         let details = self
             .get(http, &media.path())
             .send()
@@ -997,7 +995,7 @@ impl Seerr {
 
     /// Requests `media` as Seerr user `user`, so their permissions, quota and auto-approval
     /// apply. Seasons are ignored for movies.
-    pub(crate) async fn request(
+    pub async fn request(
         &self,
         http: &reqwest::Client,
         user: u32,
@@ -1044,7 +1042,7 @@ impl Seerr {
     /// Deletes request `id`. Seerr only lets users delete their own requests while pending,
     /// unless they can manage requests, so with `user` `None` this acts as Seerr's admin and
     /// the caller has to have checked.
-    pub(crate) async fn cancel(
+    pub async fn cancel(
         &self,
         http: &reqwest::Client,
         user: Option<u32>,
@@ -1067,7 +1065,7 @@ impl Seerr {
     /// Requests matching Seerr's `filter` (`all`, `pending`, `processing`, `available`, ...),
     /// newest first, skipping `skip` and taking up to `take`. Only Seerr user `user`'s with
     /// `Some`.
-    pub(crate) async fn requests(
+    pub async fn requests(
         &self,
         http: &reqwest::Client,
         filter: &str,
@@ -1099,11 +1097,7 @@ impl Seerr {
     }
 
     /// Request `id`, `None` if it's been deleted
-    pub(crate) async fn request_by_id(
-        &self,
-        http: &reqwest::Client,
-        id: u32,
-    ) -> Result<Option<Request>> {
+    pub async fn request_by_id(&self, http: &reqwest::Client, id: u32) -> Result<Option<Request>> {
         let response = self.get(http, &format!("/request/{id}")).send().await?;
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
@@ -1113,12 +1107,7 @@ impl Seerr {
 
     /// Approves or declines pending request `id` as Seerr's admin, so the caller has to have
     /// checked who may
-    pub(crate) async fn review(
-        &self,
-        http: &reqwest::Client,
-        id: u32,
-        approve: bool,
-    ) -> Result<Changed> {
+    pub async fn review(&self, http: &reqwest::Client, id: u32, approve: bool) -> Result<Changed> {
         let action = if approve { "approve" } else { "decline" };
         let response = http
             .post(self.api(&format!("/request/{id}/{action}")))
@@ -1135,7 +1124,7 @@ impl Seerr {
 
     /// Changes pending `request`'s quality profile and, for shows, seasons, as Seerr's admin, so
     /// the caller has to have checked who may. Everything else stays as it was.
-    pub(crate) async fn edit(
+    pub async fn edit(
         &self,
         http: &reqwest::Client,
         request: &Request,
@@ -1199,7 +1188,7 @@ async fn changed(response: reqwest::Response, ok: StatusCode, fallback: &str) ->
 }
 
 /// "Title (2022)", or just the title without a usable date
-pub(crate) fn with_year(title: &str, date: Option<&str>) -> String {
+pub fn with_year(title: &str, date: Option<&str>) -> String {
     date.and_then(|d| d.get(..4))
         .map_or_else(|| title.to_owned(), |year| format!("{title} ({year})"))
 }
@@ -1218,7 +1207,7 @@ fn encode(s: &str) -> String {
 }
 
 /// Jellyfin user ids without dashes and in lowercase, so either spelling of a GUID matches
-pub(crate) fn normalize(id: &str) -> String {
+pub fn normalize(id: &str) -> String {
     id.chars()
         .filter(|&c| c != '-')
         .map(|c| c.to_ascii_lowercase())
@@ -1228,6 +1217,27 @@ pub(crate) fn normalize(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newest_titles_kept() {
+        let titles = Titles::default();
+        let title = || Title {
+            title: "x".into(),
+            release_date: None,
+        };
+        for id in 0..=u32::try_from(TITLES_MAX).unwrap() {
+            // Older titles used more than once, which TinyLFU would favor over the newest
+            titles.0.insert(Media::Movie(id), title());
+            titles.0.get(&Media::Movie(id));
+            titles.0.get(&Media::Movie(id));
+            titles.0.run_pending_tasks();
+        }
+        let newest = Media::Movie(u32::try_from(TITLES_MAX).unwrap() + 1);
+        titles.0.insert(newest, title());
+        titles.0.run_pending_tasks();
+        assert!(titles.get(newest).is_some());
+        assert!(titles.0.entry_count() <= TITLES_MAX);
+    }
 
     #[test]
     fn moonfin_url() {

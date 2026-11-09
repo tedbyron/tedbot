@@ -17,9 +17,7 @@ use crate::{Context, Data, Error, Result, error::chain};
     ephemeral,
     default_member_permissions = "ADMINISTRATOR"
 )]
-pub(crate) async fn refresh_users<U: Data, E: From<Error>>(
-    ctx: Context<'_, U, E>,
-) -> Result<(), E> {
+pub async fn refresh_users<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<(), E> {
     refresh_users_run(ctx).await.map_err(E::from)
 }
 

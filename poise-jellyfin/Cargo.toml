@@ -10,10 +10,7 @@ keywords = ["discord", "jellyfin", "poise"]
 publish = false
 
 [dependencies]
-axum = { version = "0.8.9", default-features = false, features = [
-  "http1",
-  "tokio",
-] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 futures = "0.3.34"
 moka = { version = "0.12.16", features = ["future", "sync"] }

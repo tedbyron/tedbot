@@ -101,7 +101,7 @@ impl Error {
 }
 
 /// Shows `e` and its sources, for logging: "request failed: error sending request: ..."
-pub(crate) fn chain(e: &(impl std::error::Error + ?Sized)) -> impl fmt::Display + '_ {
+pub fn chain(e: &(impl std::error::Error + ?Sized)) -> impl fmt::Display + '_ {
     Chain(e)
 }
 

@@ -65,6 +65,11 @@ async fn run() -> Result<()> {
         event_handler: |ctx, event| Box::pin(poise_jellyfin::handle_event(ctx, event)),
         ..FrameworkOptions::default()
     };
+    // Owners would skip the Seerr link check the commands rely on, and poise doesn't stop the
+    // bot when `handle_event` says so on `Ready`
+    if options.skip_checks_for_owners {
+        return Err(poise_jellyfin::Error::SkipChecksForOwners.into());
+    }
 
     let activity = cfg.discord.activity;
     let http = reqwest::Client::builder()

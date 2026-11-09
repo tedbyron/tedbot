@@ -468,6 +468,12 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::{
+        Shared,
+        commands::requests::{Members, ProfileCache},
+        ersatztv::GuideCache,
+        seerr::{Links, Seerr, Titles},
+    };
 
     #[test]
     fn normalized() {
@@ -488,12 +494,6 @@ mod tests {
             }))
         );
     }
-    use crate::{
-        Shared,
-        commands::requests::{Members, ProfileCache},
-        ersatztv::GuideCache,
-        seerr::{Links, Seerr, Titles},
-    };
 
     #[test]
     fn moonfin_payload() {

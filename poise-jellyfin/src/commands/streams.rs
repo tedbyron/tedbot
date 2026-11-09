@@ -34,7 +34,7 @@ const MAX_FIELDS: usize = 25;
 
 /// Who's streaming from the Jellyfin server
 #[command(check = "super::linked", slash_command, ephemeral)]
-pub(crate) async fn streams<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<(), E> {
+pub async fn streams<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<(), E> {
     streams_run(ctx).await.map_err(E::from)
 }
 

@@ -4,12 +4,12 @@
 //! A command's `///` doc comment and its parameters' `#[description]`s are what Discord shows in
 //! the command picker, so keep them short and user-facing.
 
-pub(crate) mod refresh_users;
-pub(crate) mod request;
-pub(crate) mod requests;
-pub(crate) mod restart;
-pub(crate) mod streams;
-pub(crate) mod tv;
+pub mod refresh_users;
+pub mod request;
+pub mod requests;
+pub mod restart;
+pub mod streams;
+pub mod tv;
 
 use poise::{
     CreateReply,
@@ -69,12 +69,12 @@ fn is_admin<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> bool {
 }
 
 /// Whether `user` is one of the configured admins
-pub(crate) fn is_admin_user(data: &MediaServer, user: UserId) -> bool {
+fn is_admin_user(data: &MediaServer, user: UserId) -> bool {
     data.admins.contains(&user)
 }
 
 /// Backslash-escapes Discord markdown characters so titles show literally
-pub(crate) fn escape(s: &str) -> String {
+pub fn escape(s: &str) -> String {
     s.chars()
         .fold(String::with_capacity(s.len()), |mut out, c| {
             if matches!(c, '\\' | '*' | '_' | '~' | '`' | '|') {

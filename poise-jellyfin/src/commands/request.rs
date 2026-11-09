@@ -49,7 +49,7 @@ const UNREACHABLE: &str = "Couldn't reach Seerr, try again in a bit \u{1fae4}";
 
 /// Request a movie or show
 #[command(check = "super::linked", slash_command, ephemeral)]
-pub(crate) async fn request<U: Data, E: From<Error>>(
+pub async fn request<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     #[description = "Movie or show title"]
     #[autocomplete = "autocomplete_title"]
@@ -726,12 +726,7 @@ async fn downloads_if(
 /// downloaded if Sonarr has a file for every monitored episode. Seerr counts a season's episodes
 /// by TMDB, which can split them differently from TVDB, which Sonarr goes by. Best effort, like
 /// [`downloads_if`].
-pub(crate) async fn check_partial(
-    data: &MediaServer,
-    details: &mut Details,
-    media: Media,
-    is_4k: bool,
-) {
+pub async fn check_partial(data: &MediaServer, details: &mut Details, media: Media, is_4k: bool) {
     let Some(info) = &details.media_info else {
         return;
     };
@@ -955,7 +950,7 @@ fn season_lines(seasons: &[(u32, &str, Status)]) -> String {
 }
 
 /// Ascending numbers with runs collapsed: `[1, 2, 3, 5]` -> "1–3, 5"
-pub(crate) fn ranges(numbers: &[u32]) -> String {
+pub fn ranges(numbers: &[u32]) -> String {
     let mut runs: Vec<(u32, u32)> = Vec::new();
     for &n in numbers {
         match runs.last_mut() {
@@ -976,7 +971,7 @@ pub(crate) fn ranges(numbers: &[u32]) -> String {
 }
 
 /// `s` cut at a word to at most `max` characters, with "…" if anything was cut
-pub(crate) fn truncate(s: &str, max: usize) -> String {
+pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();
     }

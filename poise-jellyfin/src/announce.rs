@@ -27,7 +27,7 @@ const OVERVIEW_MAX: usize = 350;
 
 /// What happened to a request
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Event {
+pub enum Event {
     /// Made, whether it's waiting for approval or was approved automatically
     Requested,
     /// Its movie or seasons are in Jellyfin
@@ -36,13 +36,13 @@ pub(crate) enum Event {
 
 /// Where to post
 #[derive(Debug, Default)]
-pub(crate) struct Targets {
+pub struct Targets {
     pub requests: Vec<ChannelId>,
     pub available: Vec<ChannelId>,
 }
 
 impl Targets {
-    pub(crate) fn channels(&self, event: Event) -> &[ChannelId] {
+    pub fn channels(&self, event: Event) -> &[ChannelId] {
         match event {
             Event::Requested => &self.requests,
             Event::Available => &self.available,
@@ -54,7 +54,7 @@ impl Targets {
 /// card `/requests` shows admins, with its buttons. Available requests are skipped if what they
 /// asked for isn't all available after all. Fails if nothing was posted anywhere, so it can be
 /// tried again.
-pub(crate) async fn post(
+pub async fn post(
     discord: &Arc<Http>,
     data: &MediaServer,
     targets: &Targets,

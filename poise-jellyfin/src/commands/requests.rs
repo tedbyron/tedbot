@@ -82,7 +82,7 @@ const POST: &str = "request-post:";
 
 /// Which requests to list
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ChoiceParameter)]
-pub(crate) enum Filter {
+enum Filter {
     #[default]
     #[name = "All"]
     All,
@@ -111,7 +111,7 @@ impl Filter {
 
 /// See your recent requests
 #[command(check = "super::linked", slash_command, ephemeral)]
-pub(crate) async fn requests<U: Data, E: From<Error>>(
+pub async fn requests<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     #[description = "Only requests that are"] status: Option<Filter>,
 ) -> Result<(), E> {
@@ -410,7 +410,7 @@ struct Viewer {
 /// would otherwise look up every post's requester and approver, so each is looked up once, and
 /// callers asking at the same time wait for the one lookup. They're kept until the bot restarts.
 #[derive(Debug)]
-pub(crate) struct Members(Cache<(GuildId, u32), Option<UserId>>);
+pub struct Members(Cache<(GuildId, u32), Option<UserId>>);
 
 impl Default for Members {
     fn default() -> Self {
@@ -443,7 +443,7 @@ impl Members {
     }
 
     /// Forgets every lookup, so the next ones see accounts linked or servers joined since
-    pub(crate) fn clear(&self) {
+    pub fn clear(&self) {
         self.0.invalidate_all();
     }
 }
@@ -1359,7 +1359,7 @@ const PROFILES_TTL: Duration = Duration::from_secs(10 * 60);
 /// The last [`profiles`] fetched in full, for [`PROFILES_TTL`]. Callers asking at the same time
 /// wait for the one fetch.
 #[derive(Debug)]
-pub(crate) struct ProfileCache(Cache<(), Vec<Profiles>>);
+pub struct ProfileCache(Cache<(), Vec<Profiles>>);
 
 impl Default for ProfileCache {
     fn default() -> Self {
@@ -1368,7 +1368,7 @@ impl Default for ProfileCache {
 }
 
 /// `request` as a post in `guild`'s channels, with buttons for admins
-pub(crate) async fn post_card(
+pub async fn post_card(
     data: &MediaServer,
     discord: Arc<Http>,
     guild: Option<GuildId>,
@@ -1382,7 +1382,7 @@ pub(crate) async fn post_card(
 
 /// What a post of request `id` in `guild`'s channels looks like now, and whether the request is
 /// still open, so it may change again: not declined or done. `None` if it's gone from Seerr.
-pub(crate) async fn post_now(
+pub async fn post_now(
     data: &MediaServer,
     discord: &Arc<Http>,
     guild: Option<GuildId>,
@@ -1400,11 +1400,7 @@ pub(crate) async fn post_now(
 }
 
 /// Marks post `message` in `channel` as being of a request no longer in Seerr
-pub(crate) async fn mark_gone(
-    discord: &Http,
-    channel: ChannelId,
-    message: MessageId,
-) -> Result<()> {
+pub async fn mark_gone(discord: &Http, channel: ChannelId, message: MessageId) -> Result<()> {
     let old = channel.message(discord, message).await?;
     let edit = EditMessage::new()
         .embed(gone_embed(old.embeds.first()))
@@ -1414,7 +1410,7 @@ pub(crate) async fn mark_gone(
 }
 
 /// The request `message` is a post of, if it's one
-pub(crate) fn post_request(message: &Message) -> Option<u32> {
+pub fn post_request(message: &Message) -> Option<u32> {
     message
         .components
         .iter()
@@ -1442,7 +1438,7 @@ fn gone_embed(old: Option<&Embed>) -> CreateEmbed {
 
 /// Handles a press on a request post's buttons, or on the batch confirmation they open. Anyone
 /// can refresh; everything else is for admins. Other presses are left alone.
-pub(crate) async fn post_press(
+pub async fn post_press(
     ctx: &serenity::Context,
     data: &MediaServer,
     press: &ComponentInteraction,

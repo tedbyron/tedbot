@@ -25,7 +25,9 @@
 //!
 //! The commands are only for Discord users who put their Discord id in their Seerr notification
 //! settings; anyone else is told how to link. That's a check, so `skip_checks_for_owners` isn't
-//! supported: [`handle_event`] fails on `Ready` if it's set.
+//! supported: check it's off before starting the bot. [`handle_event`] also returns
+//! [`Error::SkipChecksForOwners`] on `Ready` if it's set, but poise only hands that to `on_error`,
+//! so it doesn't stop the bot.
 
 mod announce;
 mod arr;
@@ -212,8 +214,9 @@ pub fn commands<U: Data, E: From<Error> + Send + Sync + 'static>() -> Vec<poise:
 /// Handles presses on request posts, whose buttons outlive any command. Call it from poise's
 /// `event_handler` with every event; it ignores the rest.
 ///
-/// Fails on `Ready` if `skip_checks_for_owners` is set, since owners would skip the Seerr link
-/// check the commands rely on.
+/// Returns [`Error::SkipChecksForOwners`] on `Ready` if `skip_checks_for_owners` is set, since
+/// owners would skip the Seerr link check the commands rely on. Poise only passes that to
+/// `on_error`, so also check before starting the bot.
 pub async fn handle_event<U: Data, E: From<Error>>(
     framework: poise::FrameworkContext<'_, U, E>,
     event: &serenity::FullEvent,

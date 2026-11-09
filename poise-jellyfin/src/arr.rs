@@ -11,7 +11,7 @@ use crate::{Error, Result};
 
 /// Where to reach Radarr or Sonarr and how to authenticate. The HTTP client is passed in per call
 /// so the bot shares one connection pool.
-pub(crate) struct Arr {
+pub struct Arr {
     pub url: String,
     pub api_key: String,
 }
@@ -36,7 +36,7 @@ struct Movie {
 
 /// What came of taking a request back out
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Removed {
+pub enum Removed {
     /// Removed, or never there
     Done,
     /// Some of it has been downloaded already, so nothing was touched
@@ -65,7 +65,7 @@ struct QueueItem {
 
 /// How far a download in Radarr's or Sonarr's queue has got
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Download {
+pub enum Download {
     /// A release was grabbed, but none of it has downloaded: it's waiting for the download
     /// client or for peers
     Queued,
@@ -150,7 +150,7 @@ impl Arr {
 
     /// Radarr: how far the furthest download of the movie with TMDB id `tmdb_id` has got.
     /// `None` if nothing's in the queue for it.
-    pub(crate) async fn movie_download(
+    pub async fn movie_download(
         &self,
         http: &reqwest::Client,
         tmdb_id: u32,
@@ -173,7 +173,7 @@ impl Arr {
 
     /// Sonarr: how far the furthest download of each season of the show with TVDB id `tvdb_id`
     /// has got, for seasons with anything in the queue
-    pub(crate) async fn season_downloads(
+    pub async fn season_downloads(
         &self,
         http: &reqwest::Client,
         tvdb_id: u32,
@@ -200,22 +200,14 @@ impl Arr {
 
     /// Sonarr: the seasons of the show with TVDB id `tvdb_id` with a file for every monitored
     /// episode that's aired
-    pub(crate) async fn complete_seasons(
-        &self,
-        http: &reqwest::Client,
-        tvdb_id: u32,
-    ) -> Result<Vec<u32>> {
+    pub async fn complete_seasons(&self, http: &reqwest::Client, tvdb_id: u32) -> Result<Vec<u32>> {
         let shows: Vec<Value> = self.get(http, &format!("/series?tvdbId={tvdb_id}")).await?;
         Ok(shows.first().map(complete).unwrap_or_default())
     }
 
     /// Radarr: removes the movie with TMDB id `tmdb_id` and its downloads, unless it's been
     /// downloaded already
-    pub(crate) async fn remove_movie(
-        &self,
-        http: &reqwest::Client,
-        tmdb_id: u32,
-    ) -> Result<Removed> {
+    pub async fn remove_movie(&self, http: &reqwest::Client, tmdb_id: u32) -> Result<Removed> {
         let movies: Vec<Movie> = self.get(http, &format!("/movie?tmdbId={tmdb_id}")).await?;
         if movies.iter().any(|m| m.has_file) {
             return Ok(Removed::Downloaded);
@@ -245,7 +237,7 @@ impl Arr {
     /// Sonarr: stops `seasons` of the show with TVDB id `tvdb_id` downloading, unless any of
     /// their episodes have been downloaded already. Other seasons are left alone. If that leaves
     /// nothing monitored and no files, the show is removed altogether.
-    pub(crate) async fn remove_seasons(
+    pub async fn remove_seasons(
         &self,
         http: &reqwest::Client,
         tvdb_id: u32,

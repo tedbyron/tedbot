@@ -11,10 +11,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 anyhow = "1.0.104"
 poise = "0.7.1"
-reqwest = { version = "0.13.5", default-features = false, features = [
-  "json",
-  "query",
-] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "query"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 tokio = "1.54.1"
@@ -25,13 +22,10 @@ tracing = "0.1.44"
 missing_debug_implementations = "warn"
 missing_docs = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
-unreachable_pub = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
-# Fights unreachable_pub, which wants pub(crate) in private modules
-redundant_pub_crate = "allow"
 
 [profile.dev]
 debug = 0

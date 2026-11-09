@@ -42,7 +42,7 @@ const PAGE_SIZE: usize = 12;
 
 /// What's on live TV right now
 #[command(check = "super::linked", slash_command, ephemeral)]
-pub(crate) async fn tv<U: Data, E: From<Error>>(
+pub async fn tv<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     #[description = "Channel number or name"]
     #[autocomplete = "autocomplete_channel"]
