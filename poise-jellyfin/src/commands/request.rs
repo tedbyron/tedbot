@@ -26,7 +26,7 @@ use tracing::warn;
 
 use super::{escape, is_admin, remove_buttons, requests::profiles, seerr_user};
 use crate::{
-    Context, Data,
+    BotData, BotError, Context, MediaServer,
     arr::{Arr, Download, Removed},
     seerr::{
         self, Cancellable, Changed, Details, Media, Profiles, Quotas, Request, RequestStatus,
@@ -48,16 +48,21 @@ const MAX_OPTIONS: usize = 25;
 const UNREACHABLE: &str = "Couldn't reach Seerr, try again in a bit \u{1fae4}";
 
 /// Request a movie or show
-#[command(slash_command, ephemeral)]
-pub async fn request(
-    ctx: Context<'_>,
+#[command(check = "super::linked", slash_command, ephemeral)]
+pub async fn request<U: BotData, E: BotError>(
+    ctx: Context<'_, U, E>,
     #[description = "Movie or show title"]
     #[autocomplete = "autocomplete_title"]
     title: String,
-) -> Result<()> {
+) -> Result<(), E> {
+    request_run(ctx, title).await.map_err(E::from)
+}
+
+/// [`request()`], failing with [`anyhow::Error`]
+async fn request_run<U: BotData, E: BotError>(ctx: Context<'_, U, E>, title: String) -> Result<()> {
     ctx.defer_ephemeral().await?;
 
-    let data = ctx.data();
+    let data = ctx.data().server();
     let user = seerr_user(ctx).await?;
     let results = results(data, &title).await?;
     if results.is_empty() {
@@ -174,12 +179,15 @@ pub async fn request(
 
 /// Suggests up to 25 movies and shows (Discord's limit), filling in `movie:id` or `tv:id` so the
 /// command opens that exact one. A failed search gives no suggestions rather than an error.
-async fn autocomplete_title(ctx: Context<'_>, partial: &str) -> CreateAutocompleteResponse {
+async fn autocomplete_title<U: BotData, E: BotError>(
+    ctx: Context<'_, U, E>,
+    partial: &str,
+) -> CreateAutocompleteResponse {
     let partial = partial.trim();
     if partial.is_empty() {
         return CreateAutocompleteResponse::new();
     }
-    let data = ctx.data();
+    let data = ctx.data().server();
     let choices = match data.seerr.search(&data.http, partial).await {
         Ok(results) => results
             .iter()
@@ -207,7 +215,7 @@ async fn autocomplete_title(ctx: Context<'_>, partial: &str) -> CreateAutocomple
 
 /// What `title` refers to: the one an autocomplete suggestion picked, or else Seerr's search
 /// results
-async fn results(data: &Data, title: &str) -> Result<Vec<Media>> {
+async fn results(data: &MediaServer, title: &str) -> Result<Vec<Media>> {
     if let Ok(media) = title.parse() {
         return Ok(vec![media]);
     }
@@ -240,7 +248,7 @@ struct Viewer {
 
 impl Viewer {
     /// Fetches the user's quotas and the servers' quality profiles
-    async fn load(data: &Data, user: Requester, admin: bool) -> Self {
+    async fn load(data: &MediaServer, user: Requester, admin: bool) -> Self {
         let (quotas, profiles) = tokio::join!(Self::quotas(data, user), profiles(data));
         Self {
             user,
@@ -251,7 +259,7 @@ impl Viewer {
     }
 
     /// The user's quotas, `None` if they can't be fetched
-    async fn quotas(data: &Data, user: Requester) -> Option<Quotas> {
+    async fn quotas(data: &MediaServer, user: Requester) -> Option<Quotas> {
         data.seerr
             .quotas(&data.http, user.id)
             .await
@@ -306,7 +314,12 @@ struct Card {
 
 impl Card {
     /// Fetches result `index` (wrapping around) from Seerr and renders it
-    async fn build(data: &Data, results: &[Media], index: usize, viewer: &Viewer) -> Result<Self> {
+    async fn build(
+        data: &MediaServer,
+        results: &[Media],
+        index: usize,
+        viewer: &Viewer,
+    ) -> Result<Self> {
         let index = index % results.len();
         let media = results[index];
         let mut details = data.seerr.details(&data.http, media).await?;
@@ -454,7 +467,7 @@ impl Card {
             .and_then(|m| {
                 let is_4k = m.jellyfin_url(false).is_none();
                 let jellyfin = m.jellyfin_url(is_4k)?.to_owned();
-                let moonfin = m.moonfin_url(is_4k).filter(|_| data.jellyfin.moonfin);
+                let moonfin = m.moonfin_url(is_4k).filter(|_| data.moonfin);
                 Some([
                     ("Jellyfin", Some(jellyfin)),
                     ("Moonfin", moonfin),
@@ -506,7 +519,7 @@ impl Card {
     /// the request was made.
     async fn request(
         &self,
-        data: &Data,
+        data: &MediaServer,
         user: u32,
         is_4k: bool,
         bypass: bool,
@@ -534,7 +547,7 @@ impl Card {
 
     /// Cancels the HD or 4K version's cancellable requests, returning what to tell the invoker
     /// and whether anything changed
-    async fn cancel(&self, data: &Data, is_4k: bool) -> (String, bool) {
+    async fn cancel(&self, data: &MediaServer, is_4k: bool) -> (String, bool) {
         cancel(
             data,
             self.media,
@@ -670,7 +683,7 @@ impl Downloads {
 /// How far the downloads of `media`'s HD or 4K version have got, if `check`. Best effort:
 /// without Radarr or Sonarr, or if it can't be reached, there are none.
 async fn downloads_if(
-    data: &Data,
+    data: &MediaServer,
     media: Media,
     tvdb_id: Option<u32>,
     is_4k: bool,
@@ -712,7 +725,7 @@ async fn downloads_if(
 /// downloaded if Sonarr has a file for every monitored episode. Seerr counts a season's episodes
 /// by TMDB, which can split them differently from TVDB, which Sonarr goes by. Best effort, like
 /// [`downloads_if`].
-pub async fn check_partial(data: &Data, details: &mut Details, media: Media, is_4k: bool) {
+pub async fn check_partial(data: &MediaServer, details: &mut Details, media: Media, is_4k: bool) {
     let Some(info) = &details.media_info else {
         return;
     };
@@ -739,7 +752,7 @@ pub async fn check_partial(data: &Data, details: &mut Details, media: Media, is_
 /// Sonarr and isn't downloaded yet: the furthest of its seasons'. `None` if nothing's in the
 /// queue for it. `details` is the media's.
 pub(super) async fn request_download(
-    data: &Data,
+    data: &MediaServer,
     request: &Request,
     details: &Details,
 ) -> Option<Download> {
@@ -764,7 +777,7 @@ pub(super) async fn request_download(
 /// checked who may cancel what, so Seerr is asked as its admin. Returns what to tell the invoker,
 /// and whether anything changed.
 pub(super) async fn cancel(
-    data: &Data,
+    data: &MediaServer,
     media: Media,
     tvdb_id: Option<u32>,
     title: &str,
@@ -802,7 +815,7 @@ pub(super) async fn cancel(
 /// Seerr to try again. `Some` is a refusal to tell the invoker: Seerr's, or because Radarr or
 /// Sonarr already has some of it downloaded, which Seerr may not know yet.
 async fn try_cancel(
-    data: &Data,
+    data: &MediaServer,
     media: Media,
     tvdb_id: Option<u32>,
     cancellable: &[Cancellable],
@@ -852,7 +865,7 @@ async fn try_cancel(
 }
 
 /// The Radarr or Sonarr that `media`'s HD or 4K copy goes to, if it's configured
-const fn arr(data: &Data, media: Media, is_4k: bool) -> Option<&Arr> {
+fn arr(data: &MediaServer, media: Media, is_4k: bool) -> Option<&Arr> {
     match (media, is_4k) {
         (Media::Movie(_), false) => data.radarr.as_ref(),
         (Media::Tv(_), false) => data.sonarr.as_ref(),
@@ -873,7 +886,7 @@ const fn arr_name(media: Media, is_4k: bool) -> &'static str {
 
 /// Whether Radarr or Sonarr is configured for `media`'s HD or 4K copy, so approved requests for
 /// it can be taken back out
-pub(super) const fn can_unsend(data: &Data, media: Media, is_4k: bool) -> bool {
+pub(super) fn can_unsend(data: &MediaServer, media: Media, is_4k: bool) -> bool {
     arr(data, media, is_4k).is_some()
 }
 

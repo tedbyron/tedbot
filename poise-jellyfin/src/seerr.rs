@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 /// Where to reach Seerr and how to authenticate. The HTTP client is passed in per call so the bot
 /// shares one connection pool.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Seerr {
     pub url: String,
     pub api_key: String,
@@ -24,6 +24,16 @@ pub struct Seerr {
     pub links: Links,
     /// Titles seen in [`Self::details`], for when it's slow
     pub titles: Titles,
+}
+
+/// Leaves out the API key
+impl fmt::Debug for Seerr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Seerr")
+            .field("url", &self.url)
+            .field("public_url", &self.public_url)
+            .finish_non_exhaustive()
+    }
 }
 
 /// How long [`Links`] are kept before they're fetched again

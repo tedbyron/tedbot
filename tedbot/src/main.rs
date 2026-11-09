@@ -1,11 +1,11 @@
 //! tedbot, a Discord bot for Ted's home media server.
 //!
-//! Reads its config (see `config.example.toml`), registers the slash commands in [`commands`]
+//! Reads its config (see `config.example.toml`), registers [`poise_jellyfin`]'s slash commands
 //! globally, and runs until the gateway connection fails.
 
 #![warn(clippy::all, clippy::nursery, rust_2018_idioms)]
 
-use std::{env, fs, process, sync::Arc, time::Duration};
+use std::{env, fs, process, time::Duration};
 
 use anyhow::{Context as _, Error, Result};
 use poise::{
@@ -13,52 +13,21 @@ use poise::{
     builtins::register_globally,
     serenity_prelude::{self as serenity, ActivityData, GatewayIntents, Permissions},
 };
+use poise_jellyfin::{MediaServer, RestartBot};
 use tracing::{Level, error, info, warn};
 
-mod announce;
-mod arr;
-mod commands;
 mod config;
-mod ersatztv;
-mod jellyfin;
-mod seerr;
-mod webhook;
 
-/// State shared by every command invocation
-#[derive(Debug)]
-pub struct Data {
-    /// One HTTP client for all upstream services, so connections are pooled
-    http: reqwest::Client,
-    /// ErsatzTV's XMLTV guide, refetched at most once a minute
-    guide: ersatztv::GuideCache,
-    /// Jellyfin connection info
-    jellyfin: jellyfin::Jellyfin,
-    /// Seerr connection info
-    seerr: seerr::Seerr,
-    /// Radarr connection info, if configured
-    radarr: Option<arr::Arr>,
-    /// Sonarr connection info, if configured
-    sonarr: Option<arr::Arr>,
-    /// 4K Radarr connection info, if configured
-    radarr_4k: Option<arr::Arr>,
-    /// 4K Sonarr connection info, if configured
-    sonarr_4k: Option<arr::Arr>,
-    /// Users who count as admins
-    admins: Vec<serenity::UserId>,
-    /// Seerr users' Discord accounts in each server, as looked up lately
-    members: commands::requests::Members,
-    /// The default servers' quality profiles, as fetched lately
-    profiles: commands::requests::ProfileCache,
-}
 /// How long an HTTP request may take to connect, to Discord or upstream services
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long an HTTP request may take in all, so a lost connection fails instead of hanging
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-// In an `Arc` so the webhook can share it
-type Context<'a> = poise::Context<'a, Arc<Data>, Error>;
-type Framework = poise::Framework<Arc<Data>, Error>;
-type FrameworkError<'a> = poise::FrameworkError<'a, Arc<Data>, Error>;
+// The media server is the bot's only state
+type Data = MediaServer;
+type Context<'a> = poise::Context<'a, Data, Error>;
+type Framework = poise::Framework<Data, Error>;
+type FrameworkError<'a> = poise::FrameworkError<'a, Data, Error>;
 
 /// Runs the bot, exiting with status 1 and the error chain if it stops
 #[tokio::main]
@@ -81,15 +50,6 @@ async fn run() -> Result<()> {
         &fs::read_to_string(&path).with_context(|| format!("reading {path}"))?,
     )
     .with_context(|| format!("parsing {path}"))?;
-    anyhow::ensure!(
-        !cfg.jellyfin.api_key.is_empty(),
-        "{path}: jellyfin.api_key is empty"
-    );
-    anyhow::ensure!(
-        !cfg.seerr.api_key.is_empty(),
-        "{path}: seerr.api_key is empty"
-    );
-
     tracing_subscriber::fmt()
         .with_target(false)
         .with_max_level(
@@ -101,73 +61,24 @@ async fn run() -> Result<()> {
         .init();
 
     let options = FrameworkOptions {
-        commands: vec![
-            commands::refresh_users::refresh_users(),
-            commands::request::request(),
-            commands::requests::requests(),
-            commands::restart::restart(),
-            commands::streams::streams(),
-            commands::tv::tv(),
-        ],
+        commands: poise_jellyfin::commands(),
         on_error: |e| Box::pin(on_error(e)),
         pre_command: |ctx| Box::pin(pre_command(ctx)),
-        command_check: Some(|ctx| Box::pin(command_check(ctx))),
-        event_handler: |ctx, event| Box::pin(event_handler(ctx, event)),
+        event_handler: |ctx, event| Box::pin(poise_jellyfin::handle_event(ctx, event)),
         ..FrameworkOptions::default()
     };
 
     let activity = cfg.discord.activity;
-    let webhook = match cfg.seerr.webhook {
-        Some(c) => {
-            let targets = announce::Targets {
-                requests: c.requests_channels,
-                available: c.available_channels,
-                admins: cfg.discord.admins.clone(),
-            };
-            Some(webhook::Listener::bind(c.port, c.forward, targets).await?)
-        }
-        None => None,
-    };
     let http = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()?;
-    let data = Data {
-        guide: ersatztv::GuideCache::new(http.clone(), cfg.ersatztv.url, Duration::from_secs(60)),
-        http,
-        jellyfin: jellyfin::Jellyfin {
-            url: cfg.jellyfin.url,
-            api_key: cfg.jellyfin.api_key,
-            moonfin: cfg.jellyfin.moonfin,
-            launchd_label: cfg.jellyfin.launchd_label,
-        },
-        seerr: seerr::Seerr {
-            url: cfg.seerr.url,
-            api_key: cfg.seerr.api_key,
-            public_url: cfg.seerr.public_url,
-            links: seerr::Links::default(),
-            titles: seerr::Titles::default(),
-        },
-        radarr: cfg.radarr.map(|c| arr::Arr {
-            url: c.url,
-            api_key: c.api_key,
-        }),
-        sonarr: cfg.sonarr.map(|c| arr::Arr {
-            url: c.url,
-            api_key: c.api_key,
-        }),
-        radarr_4k: cfg.radarr_4k.map(|c| arr::Arr {
-            url: c.url,
-            api_key: c.api_key,
-        }),
-        sonarr_4k: cfg.sonarr_4k.map(|c| arr::Arr {
-            url: c.url,
-            api_key: c.api_key,
-        }),
-        admins: cfg.discord.admins,
-        members: commands::requests::Members::default(),
-        profiles: commands::requests::ProfileCache::default(),
-    };
+    // The client then stops, `main` exits, and the service manager (launchd's `KeepAlive` in
+    // dotfiles) starts the bot again
+    let restart = RestartBot::new(|shards| async move { shards.shutdown_all().await });
+    let data =
+        MediaServer::new(&cfg.server, cfg.discord.admins, http, Some(restart)).context(path)?;
+    let webhook = poise_jellyfin::Listener::bind(&cfg.server).await?;
     let framework = Framework::builder()
         .setup(move |ctx, ready, framework| {
             Box::pin(setup(ctx, ready, framework, activity, webhook, data))
@@ -217,57 +128,10 @@ async fn on_error(err: FrameworkError<'_>) {
     }
 }
 
-/// Handles presses on request posts, whose buttons outlive any command
-async fn event_handler(
-    ctx: poise::FrameworkContext<'_, Arc<Data>, Error>,
-    event: &serenity::FullEvent,
-) -> Result<()> {
-    if let serenity::FullEvent::InteractionCreate {
-        interaction: serenity::Interaction::Component(press),
-    } = event
-    {
-        commands::requests::post_press(ctx.serenity_context, ctx.user_data, press).await?;
-    }
-    Ok(())
-}
-
 /// Logs who ran which command
 #[tracing::instrument(skip_all)]
 async fn pre_command(ctx: Context<'_>) {
     info!("{} used `{}`", ctx.author().name, ctx.invocation_string());
-}
-
-/// Ignores commands from other bots, and from users who haven't linked their Discord account in
-/// Seerr, who are told how to. Commands get the invoker's Seerr user from
-/// [`commands::seerr_user`].
-async fn command_check(ctx: Context<'_>) -> Result<bool> {
-    if ctx.author().bot {
-        return Ok(false);
-    }
-    let data = ctx.data();
-    let Some(user) = data.seerr.user_for(&data.http, ctx.author().id).await? else {
-        let autocomplete = matches!(
-            ctx,
-            poise::Context::Application(app)
-                if app.interaction_type == poise::CommandInteractionType::Autocomplete
-        );
-        if !autocomplete {
-            let mut content = "To use tedbot, add your Discord user ID to your Seerr \
-                               notification settings"
-                .to_owned();
-            if let Some(url) = &data.seerr.public_url {
-                content = format!(
-                    "{content}: {}/profile/settings/notifications/discord",
-                    url.trim_end_matches('/')
-                );
-            }
-            ctx.send(CreateReply::default().ephemeral(true).content(content))
-                .await?;
-        }
-        return Ok(false);
-    };
-    ctx.set_invocation_data(user).await;
-    Ok(true)
 }
 
 /// Runs once the gateway is ready: registers commands, logs the invite link, sets the activity,
@@ -278,9 +142,9 @@ async fn setup(
     ready: &serenity::Ready,
     framework: &Framework,
     cfg: Option<config::DiscordActivityConfig>,
-    webhook: Option<webhook::Listener>,
-    data: Data,
-) -> Result<Arc<Data>> {
+    webhook: Option<poise_jellyfin::Listener>,
+    data: MediaServer,
+) -> Result<Data> {
     register_globally(ctx, &framework.options().commands).await?;
     clear_guild_commands(ctx, ready).await;
 
@@ -294,7 +158,6 @@ async fn setup(
     if let Some(cfg) = &cfg {
         activity(ctx, cfg);
     }
-    let data = Arc::new(data);
     if let Some(webhook) = webhook {
         webhook.spawn(ctx.http.clone(), data.clone());
     }

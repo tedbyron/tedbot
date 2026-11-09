@@ -20,7 +20,7 @@ use tracing::warn;
 
 use super::{escape, is_admin, remove_buttons};
 use crate::{
-    Context,
+    BotData, BotError, Context,
     jellyfin::{self, Session},
     seerr,
 };
@@ -33,8 +33,13 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(14 * 60);
 const MAX_FIELDS: usize = 25;
 
 /// Who's streaming from the Jellyfin server
-#[command(slash_command, ephemeral)]
-pub async fn streams(ctx: Context<'_>) -> Result<()> {
+#[command(check = "super::linked", slash_command, ephemeral)]
+pub async fn streams<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> Result<(), E> {
+    streams_run(ctx).await.map_err(E::from)
+}
+
+/// [`streams()`], failing with [`anyhow::Error`]
+async fn streams_run<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> Result<()> {
     ctx.defer_ephemeral().await?;
 
     let admin = is_admin(ctx);
@@ -85,8 +90,11 @@ pub async fn streams(ctx: Context<'_>) -> Result<()> {
 
 /// The stream count, upload in use, and who's watching. For admins, also LAN bandwidth and one
 /// field per stream, sorted by user.
-async fn embed(ctx: Context<'_>, admin: bool) -> Result<CreateEmbed> {
-    let data = ctx.data();
+async fn embed<U: BotData, E: BotError>(
+    ctx: Context<'_, U, E>,
+    admin: bool,
+) -> Result<CreateEmbed> {
+    let data = ctx.data().server();
     let mut sessions = data.jellyfin.playing(&data.http).await?;
     let embed = CreateEmbed::new();
     let count = match sessions.len() {
@@ -129,8 +137,11 @@ async fn embed(ctx: Context<'_>, admin: bool) -> Result<CreateEmbed> {
 
 /// How to show each session's user: a mention if they linked a Discord account in Seerr and are
 /// in this server, else their Jellyfin name. A mention in an embed never pings.
-async fn users(ctx: Context<'_>, sessions: &[Session]) -> Vec<String> {
-    let data = ctx.data();
+async fn users<U: BotData, E: BotError>(
+    ctx: Context<'_, U, E>,
+    sessions: &[Session],
+) -> Vec<String> {
+    let data = ctx.data().server();
     let jellyfin_ids: Vec<&str> = sessions
         .iter()
         .filter_map(|s| s.user_id.as_deref())

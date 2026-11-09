@@ -11,7 +11,7 @@ use poise::serenity_prelude::{
 use tracing::warn;
 
 use crate::{
-    Data,
+    MediaServer,
     commands::{
         escape,
         request::{check_partial, ranges, truncate},
@@ -39,8 +39,6 @@ pub enum Event {
 pub struct Targets {
     pub requests: Vec<ChannelId>,
     pub available: Vec<ChannelId>,
-    /// Pinged for requests waiting for approval, where they're in the channel's server
-    pub admins: Vec<UserId>,
 }
 
 impl Targets {
@@ -58,7 +56,7 @@ impl Targets {
 /// tried again.
 pub async fn post(
     discord: &Arc<Http>,
-    data: &Data,
+    data: &MediaServer,
     targets: &Targets,
     event: Event,
     request: &Request,
@@ -66,13 +64,14 @@ pub async fn post(
     let mut posts = Vec::new();
     match event {
         Event::Requested => {
-            // Only requests waiting for approval need an admin
+            // Only requests waiting for approval need an admin, pinged where they're in the
+            // channel's server
             let pending = request.status == RequestStatus::Pending;
             for &channel in &targets.requests {
                 let guild = guild(discord, channel).await;
                 let mut ping = Vec::new();
                 if let Some(guild) = guild.filter(|_| pending) {
-                    for &admin in &targets.admins {
+                    for &admin in &data.admins {
                         if guild.member(discord, admin).await.is_ok() {
                             ping.push(admin);
                         }
@@ -130,7 +129,7 @@ pub async fn post(
 /// The "now available" card, without the requester, which depends on the channel. `None` if what
 /// `request` asked for isn't all available.
 async fn available(
-    data: &Data,
+    data: &MediaServer,
     request: &Request,
 ) -> Result<Option<(CreateEmbed, Vec<CreateActionRow>)>> {
     let media = request
@@ -166,7 +165,7 @@ async fn available(
     let info = details.media_info.as_ref();
     let jellyfin = info.and_then(|m| m.jellyfin_url(request.is_4k).map(str::to_owned));
     let moonfin = info
-        .filter(|_| data.jellyfin.moonfin)
+        .filter(|_| data.moonfin)
         .and_then(|m| m.moonfin_url(request.is_4k));
     let links: Vec<CreateButton> = [
         ("Jellyfin", jellyfin),

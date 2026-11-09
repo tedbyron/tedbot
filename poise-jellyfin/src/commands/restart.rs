@@ -1,13 +1,14 @@
-//! `/restart`: restarts Jellyfin's launchd agent, or the bot itself, for admins only.
+//! `/restart`: restarts Jellyfin, or the bot itself if it can, for admins only.
 //!
 //! Discord hides it from members without Administrator unless the server's Integrations settings
 //! give the admin role access too; the bot checks the role itself either way. Asks to confirm with
-//! what it would interrupt, then waits for Jellyfin's health check to pass again. The bot
-//! restarts by disconnecting and exiting, for its launchd agent's `KeepAlive` to start it again.
+//! what it would interrupt, then waits for Jellyfin's health check to pass again. Jellyfin restarts
+//! with its configured restart command, or else restarts itself. The bot restarts however it was
+//! given ([`crate::RestartBot`]).
 
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, ensure};
+use anyhow::{Context as _, Result, ensure};
 use poise::{
     ChoiceParameter, CreateReply, command,
     serenity_prelude::{
@@ -19,7 +20,7 @@ use tokio::{process::Command, time::sleep};
 use tracing::{error, info, warn};
 
 use super::{is_admin, remove_buttons};
-use crate::{Context, Data};
+use crate::{BotData, BotError, Context, MediaServer};
 
 /// How long the confirmation's buttons work
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(60);
@@ -33,13 +34,13 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 pub enum Service {
     #[name = "Jellyfin"]
     Jellyfin,
-    #[name = "tedbot"]
-    Tedbot,
+    #[name = "This bot"]
+    Bot,
 }
 
 impl Service {
     /// What restarting it interrupts, for the confirmation
-    async fn interrupts(self, data: &Data) -> String {
+    async fn interrupts(self, data: &MediaServer) -> String {
         match self {
             Self::Jellyfin => match data.jellyfin.playing(&data.http).await {
                 Ok(sessions) => match sessions.len() {
@@ -52,7 +53,7 @@ impl Service {
                     "Jellyfin isn't answering, so streams can't be counted.".to_owned()
                 }
             },
-            Self::Tedbot => "Buttons on command replies already sent stop working (request \
+            Self::Bot => "Buttons on command replies already sent stop working (request \
                              posts' keep working), and Seerr notifications sent while it's down \
                              are missed."
                 .to_owned(),
@@ -62,23 +63,39 @@ impl Service {
 
 /// Restart a media server service
 #[command(
+    check = "super::linked",
     slash_command,
     ephemeral,
     guild_only,
     default_member_permissions = "ADMINISTRATOR"
 )]
-pub async fn restart(
-    ctx: Context<'_>,
+pub async fn restart<U: BotData, E: BotError>(
+    ctx: Context<'_, U, E>,
     #[description = "Service to restart"] service: Service,
+) -> Result<(), E> {
+    restart_run(ctx, service).await.map_err(E::from)
+}
+
+/// [`restart()`], failing with [`anyhow::Error`]
+async fn restart_run<U: BotData, E: BotError>(
+    ctx: Context<'_, U, E>,
+    service: Service,
 ) -> Result<()> {
-    let name = service.name();
+    let name = match service {
+        Service::Jellyfin => service.name().to_owned(),
+        Service::Bot => ctx.cache().current_user().name.clone(),
+    };
     if !is_admin(ctx) {
         ctx.say("Only admins can restart services").await?;
         return Ok(());
     }
+    let data = ctx.data().server();
+    if matches!(service, Service::Bot) && data.restart_bot.is_none() {
+        ctx.say(format!("{name} can't restart itself")).await?;
+        return Ok(());
+    }
     ctx.defer_ephemeral().await?;
 
-    let data = ctx.data();
     let interrupts = service.interrupts(data).await;
     let id = ctx.id();
     let buttons = CreateActionRow::Buttons(vec![
@@ -104,7 +121,7 @@ pub async fn restart(
     let restart = press.data.custom_id.ends_with("-restart");
     let update = CreateInteractionResponseMessage::new()
         .content(match (restart, service) {
-            (true, Service::Tedbot) => "Restarting, back in a few seconds\u{2026}".to_owned(),
+            (true, Service::Bot) => "Restarting, back in a few seconds\u{2026}".to_owned(),
             (true, Service::Jellyfin) => format!("Restarting {name}\u{2026}"),
             (false, _) => "Not restarted".to_owned(),
         })
@@ -115,15 +132,18 @@ pub async fn restart(
     if !restart {
         return Ok(());
     }
-    if matches!(service, Service::Tedbot) {
+    if let (Service::Bot, Some(restart)) = (service, &data.restart_bot) {
         info!("{} restarted the bot", ctx.author().name);
-        // The client then stops and `main` exits
-        ctx.framework().shard_manager().shutdown_all().await;
+        (restart.0)(ctx.framework().shard_manager().clone()).await;
         return Ok(());
     }
 
     let started = Instant::now();
-    let content = if let Err(e) = kickstart(&data.jellyfin.launchd_label).await {
+    let restarted = match &data.jellyfin_restart {
+        Some(command) => run(command).await,
+        None => data.jellyfin.restart(&data.http).await.map_err(Into::into),
+    };
+    let content = if let Err(e) = restarted {
         error!("Restarting {name}: {e:#}");
         format!("Couldn't restart {name} \u{1fae4}")
     } else {
@@ -146,16 +166,14 @@ pub async fn restart(
     Ok(())
 }
 
-/// Restarts launchd agent `label` in the bot's own session, killing it first if it's running
-async fn kickstart(label: &str) -> Result<()> {
-    let target = format!("gui/{}/{label}", rustix::process::getuid().as_raw());
-    let out = Command::new("/bin/launchctl")
-        .args(["kickstart", "-k", &target])
-        .output()
-        .await?;
+/// Runs `command` (program, then arguments), failing if it does
+async fn run(command: &[String]) -> Result<()> {
+    let (program, args) = command.split_first().context("Empty restart command")?;
+    let out = Command::new(program).args(args).output().await?;
     ensure!(
         out.status.success(),
-        "launchctl kickstart -k {target}: {}",
+        "{}: {}",
+        command.join(" "),
         String::from_utf8_lossy(&out.stderr).trim()
     );
     Ok(())

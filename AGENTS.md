@@ -5,12 +5,23 @@ home media server.
 
 ## Current state of the code
 
-- Workspace with one crate, `tedbot/`. Commands live in `tedbot/src/commands/`
-  and are registered in `main.rs` (`FrameworkOptions.commands`). Upstream API
-  clients are one module each (`seerr.rs`, `jellyfin.rs`, `arr.rs`,
-  `ersatztv.rs`). `webhook.rs` listens for Seerr's webhook, started in `setup`
-  once the gateway is ready, and hands new and available requests to
-  `announce.rs`.
+- Workspace with two crates. `poise-jellyfin/` is a library holding everything
+  that talks to the media server, so any poise bot can add it: every command
+  (`commands/`, listed in `lib.rs`'s `commands()`), the upstream API clients
+  (`seerr.rs`, `jellyfin.rs`, `arr.rs`, `ersatztv.rs`), the webhook
+  (`webhook.rs`, which hands new and available requests to `announce.rs`), and
+  the media server's config sections (`config.rs`). Its state is `MediaServer`;
+  commands are generic over the bot's data (`U: AsRef<MediaServer>`, the
+  `BotData` trait, `ctx.data().server()`) and error (`E: From<anyhow::Error>`,
+  `BotError`), each a thin `#[command]` wrapper around a `*_run` function that
+  returns `anyhow::Result`. `tedbot/` is just the bot: `main.rs` reads the
+  config (`config.rs` flattens the library's `Config` next to `[discord]` and
+  `log_level`), registers the commands, routes events to
+  `poise_jellyfin::handle_event`, and starts the webhook (`Listener`) in `setup`
+  once the gateway is ready. Its data is `MediaServer`, which holds its state in
+  an `Arc`, so clones (one for the webhook) share it. The commands rely on their
+  `linked` check, so poise's `skip_checks_for_owners` isn't supported
+  (`handle_event` fails on `Ready` if it's set).
 - Config is read from `$TEDBOT_CONFIG`, falling back to `config.toml` in the
   working directory (gitignored; see `config.example.toml`). Secrets go there,
   never in the repo.
@@ -73,8 +84,7 @@ store):
   partly downloaded (`MEDIA_AVAILABLE` waits for every requested season) or a
   download starts. Declined, completed and deleted requests are dropped. Posts
   are only edited when what they show changed: Discord allows only a few edits a
-  minute to messages over an hour old. `Data` is in an `Arc` so the webhook
-  shares it.
+  minute to messages over an hour old.
 - **Available channel** (done): "now available" posts in each of
   `seerr.webhook.available_channels` when Seerr's webhook sends
   `MEDIA_AVAILABLE`: poster, title, overview, the requested seasons that are
@@ -185,16 +195,19 @@ store):
   ephemeral messages can only be edited with an interaction token, which expires
   after 15 minutes, so buttons time out after 14 and are removed with the newest
   token.
-- **`/restart <service>`** (done): Jellyfin or tedbot. Admins only. Jellyfin's
-  launchd agent is `jellyfin.launchd_label`, by default `org.nixos.jellyfin`.
+- **`/restart <service>`** (done): Jellyfin or the bot. Admins only.
   `default_member_permissions` hides it from members without Administrator;
   Discord can't change a command's permissions from a bot token, so admins are
   given access in each server's Integrations settings, and the bot checks
   `is_admin` regardless. Confirms with how many streams it would stop, runs
-  `launchctl kickstart -k gui/<uid>/<label>` (the bot is an agent in the same
-  session), then polls Jellyfin's `/health`. tedbot shuts its shards down so
-  `main` exits, and its agent's `KeepAlive` (dotfiles' `tedbot.nix`) starts it
-  again; killing itself with `kickstart -k` could take `launchctl` down too.
+  `jellyfin.restart_command` (no shell; tedbot's config has `sh -c` with
+  `launchctl kickstart -k gui/$(id -u)/org.nixos.jellyfin`, the bot being an
+  agent in the same session) or else asks Jellyfin's `POST /System/Restart`,
+  then polls Jellyfin's `/health`. The bot restarts with the `RestartBot` the
+  host gives `MediaServer::new`; without one it says it can't. tedbot's shuts
+  its shards down so `main` exits, and its agent's `KeepAlive` (dotfiles'
+  `tedbot.nix`) starts it again; killing itself with `kickstart -k` could take
+  `launchctl` down too.
 - **`/refresh-users`** (done): admins only, hidden like `/restart`. Forgets the
   member lookups and refetches who linked what in Seerr
   (`Seerr::refresh_links`), so a newly linked account shows as a mention without
@@ -216,10 +229,10 @@ already comes to the bot (`webhook.rs`); new Seerr events go there. Any other
 listener binds to localhost too.
 
 Every command (and autocomplete) is only for users whose Discord id is in their
-Seerr notification settings: `command_check` in `main.rs` looks them up
-(`Seerr::user_for`, refetched at most once a minute), tells anyone else how to
-link, and hands commands the Seerr user (`commands::seerr_user`). Request posts'
-buttons aren't commands and aren't checked this way.
+Seerr notification settings: each command's check (`commands::linked`) looks
+them up (`Seerr::user_for`, refetched at most once a minute), tells anyone else
+how to link, and hands commands the Seerr user (`commands::seerr_user`). Request
+posts' buttons aren't commands and aren't checked this way.
 
 Anything that controls qBittorrent, approves requests, or deletes media must be
 restricted to admins: the user ids in `discord.admins` (`commands::is_admin`),

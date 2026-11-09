@@ -23,7 +23,7 @@ use tracing::warn;
 
 use super::{escape, remove_buttons};
 use crate::{
-    Context, Data,
+    BotData, BotError, Context, MediaServer,
     ersatztv::{Guide, Program},
 };
 
@@ -41,11 +41,19 @@ const KEYPAD_MAX: usize = 12;
 const PAGE_SIZE: usize = 12;
 
 /// What's on live TV right now
-#[command(slash_command, ephemeral)]
-pub async fn tv(
-    ctx: Context<'_>,
+#[command(check = "super::linked", slash_command, ephemeral)]
+pub async fn tv<U: BotData, E: BotError>(
+    ctx: Context<'_, U, E>,
     #[description = "Channel number or name"]
     #[autocomplete = "autocomplete_channel"]
+    channel: Option<String>,
+) -> Result<(), E> {
+    tv_run(ctx, channel).await.map_err(E::from)
+}
+
+/// [`tv()`], failing with [`anyhow::Error`]
+async fn tv_run<U: BotData, E: BotError>(
+    ctx: Context<'_, U, E>,
     channel: Option<String>,
 ) -> Result<()> {
     let mode = if channel.is_some() {
@@ -59,8 +67,11 @@ pub async fn tv(
 /// Suggests up to 25 channels (Discord's limit) by title, filling in the channel number so
 /// [`crate::ersatztv::Guide::find`] matches it exactly. An unreachable guide gives no suggestions
 /// rather than an error.
-async fn autocomplete_channel(ctx: Context<'_>, partial: &str) -> CreateAutocompleteResponse {
-    let choices = match ctx.data().guide.get().await {
+async fn autocomplete_channel<U: BotData, E: BotError>(
+    ctx: Context<'_, U, E>,
+    partial: &str,
+) -> CreateAutocompleteResponse {
+    let choices = match ctx.data().server().guide.get().await {
         Ok(guide) => guide
             .search(partial, 25)
             .into_iter()
@@ -101,10 +112,14 @@ enum Target {
 ///
 /// Only presses on this reply are collected. Button and modal ids are prefixed with the
 /// invocation id so concurrent invocations' modals don't collide.
-async fn navigate(ctx: Context<'_>, mode: Mode, query: Option<String>) -> Result<()> {
+async fn navigate<U: BotData, E: BotError>(
+    ctx: Context<'_, U, E>,
+    mode: Mode,
+    query: Option<String>,
+) -> Result<()> {
     ctx.defer_ephemeral().await?;
 
-    let data = ctx.data();
+    let data = ctx.data().server();
     let id = ctx.id().to_string();
     let modal_id = format!("{id}-modal");
     let target = query.map_or(Target::Index(0), Target::Find);
@@ -241,7 +256,7 @@ impl Screen {
     ///
     /// `None` when there are no channels or `Target::Find` matches nothing. Errors only if the
     /// guide can't be fetched.
-    async fn build(data: &Data, mode: Mode, target: &Target) -> Result<Option<Self>> {
+    async fn build(data: &MediaServer, mode: Mode, target: &Target) -> Result<Option<Self>> {
         let guide = data.guide.get().await?;
         let channels = guide.channels.len();
         if channels == 0 {
@@ -440,7 +455,7 @@ impl Screen {
 
 /// Surname of a movie's first director, from Jellyfin. `None` for episodes, or if the lookup
 /// fails.
-async fn director(data: &Data, p: &Program) -> Option<String> {
+async fn director(data: &MediaServer, p: &Program) -> Option<String> {
     if p.episode().is_some() {
         return None;
     }

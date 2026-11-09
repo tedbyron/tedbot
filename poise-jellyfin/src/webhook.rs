@@ -39,7 +39,7 @@ use tokio::{net::TcpListener, time::MissedTickBehavior};
 use tracing::{error, info, warn};
 
 use crate::{
-    Data,
+    Config, MediaServer,
     announce::{self, Event, Targets},
     commands::requests::{mark_gone, post_now, post_request},
 };
@@ -62,7 +62,7 @@ pub struct Listener {
 /// What a notification handler needs
 struct Hook {
     discord: Arc<Http>,
-    data: Arc<Data>,
+    data: MediaServer,
     /// Where to pass notifications on to
     forward: Vec<String>,
     targets: Targets,
@@ -93,8 +93,23 @@ struct NotificationRequest {
 }
 
 impl Listener {
-    /// Binds localhost:`port`, so a port in use fails at startup
-    pub async fn bind(port: u16, forward: Vec<String>, targets: Targets) -> Result<Self> {
+    /// Binds localhost on the webhook's port, if the webhook is configured, so a port in use
+    /// fails at startup
+    pub async fn bind(cfg: &Config) -> Result<Option<Self>> {
+        let Some(c) = &cfg.seerr.webhook else {
+            return Ok(None);
+        };
+        let targets = Targets {
+            requests: c.requests_channels.clone(),
+            available: c.available_channels.clone(),
+        };
+        Self::bind_port(c.port, c.forward.clone(), targets)
+            .await
+            .map(Some)
+    }
+
+    /// Binds localhost:`port`
+    async fn bind_port(port: u16, forward: Vec<String>, targets: Targets) -> Result<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
             .await
             .with_context(|| format!("binding localhost:{port} for the webhook"))?;
@@ -105,8 +120,9 @@ impl Listener {
         })
     }
 
-    /// Serves in the background for as long as the bot runs
-    pub fn spawn(self, discord: Arc<Http>, data: Arc<Data>) {
+    /// Serves in the background for as long as the bot runs. Call it once Discord is connected.
+    /// `data`'s admins are pinged for requests waiting for approval.
+    pub fn spawn(self, discord: Arc<Http>, data: MediaServer) {
         let hook = Arc::new(Hook {
             discord,
             data,
@@ -470,9 +486,9 @@ mod tests {
         );
     }
     use crate::{
+        Shared,
         commands::requests::{Members, ProfileCache},
         ersatztv::GuideCache,
-        jellyfin::Jellyfin,
         seerr::{Links, Seerr, Titles},
     };
 
@@ -519,7 +535,7 @@ mod tests {
             .with_state(seen.clone());
         tokio::spawn(async move { axum::serve(upstream, app).await });
 
-        let listener = Listener::bind(
+        let listener = Listener::bind_port(
             0,
             vec![
                 format!("http://{upstream_addr}/ok"),
@@ -532,15 +548,16 @@ mod tests {
         let addr = listener.listener.local_addr().unwrap();
         let http = reqwest::Client::new();
         let unused = || "http://localhost:1".to_owned();
-        let data = Data {
+        let data = MediaServer(Arc::new(Shared {
             guide: GuideCache::new(http.clone(), unused(), Duration::ZERO),
-            http,
-            jellyfin: Jellyfin {
+            jellyfin: crate::jellyfin::Jellyfin {
                 url: unused(),
                 api_key: String::new(),
-                moonfin: false,
-                launchd_label: String::new(),
             },
+            http,
+            moonfin: false,
+            jellyfin_restart: None,
+            restart_bot: None,
             seerr: Seerr {
                 url: unused(),
                 api_key: String::new(),
@@ -555,8 +572,8 @@ mod tests {
             admins: Vec::new(),
             members: Members::default(),
             profiles: ProfileCache::default(),
-        };
-        listener.spawn(Arc::new(Http::new("")), Arc::new(data));
+        }));
+        listener.spawn(Arc::new(Http::new("")), data);
 
         let body = r#"{"notification_type": "MEDIA_PENDING", "request": {"request_id": "1"}}"#;
         let response = reqwest::Client::new()

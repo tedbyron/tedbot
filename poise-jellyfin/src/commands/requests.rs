@@ -45,7 +45,7 @@ use super::{
     seerr_user,
 };
 use crate::{
-    Context, Data,
+    BotData, BotError, Context, MediaServer,
     arr::Download,
     seerr::{
         self, Cancellable, Changed, Details, Media, Profiles, Request, RequestStatus, RequestedBy,
@@ -109,14 +109,22 @@ impl Filter {
 }
 
 /// See your recent requests
-#[command(slash_command, ephemeral)]
-pub async fn requests(
-    ctx: Context<'_>,
+#[command(check = "super::linked", slash_command, ephemeral)]
+pub async fn requests<U: BotData, E: BotError>(
+    ctx: Context<'_, U, E>,
     #[description = "Only requests that are"] status: Option<Filter>,
+) -> Result<(), E> {
+    requests_run(ctx, status).await.map_err(E::from)
+}
+
+/// [`requests()`], failing with [`anyhow::Error`]
+async fn requests_run<U: BotData, E: BotError>(
+    ctx: Context<'_, U, E>,
+    status: Option<Filter>,
 ) -> Result<()> {
     ctx.defer_ephemeral().await?;
 
-    let data = ctx.data();
+    let data = ctx.data().server();
     let user = seerr_user(ctx).await?;
     let admin = is_admin(ctx);
 
@@ -291,7 +299,7 @@ pub async fn requests(
 type Arrived = HashMap<Media, Option<Details>>;
 
 /// Looks up `late` again with the usual timeout, if there are any
-fn fetch_late<'a>(data: &'a Data, late: &[Media]) -> Option<BoxFuture<'a, Arrived>> {
+fn fetch_late<'a>(data: &'a MediaServer, late: &[Media]) -> Option<BoxFuture<'a, Arrived>> {
     if late.is_empty() {
         return None;
     }
@@ -408,7 +416,13 @@ type Member = Arc<OnceCell<Option<UserId>>>;
 
 impl Members {
     /// Seerr user `id`'s Discord account, if they linked one in Seerr and it's in `guild`
-    async fn get(&self, data: &Data, discord: &Http, guild: GuildId, id: u32) -> Option<UserId> {
+    async fn get(
+        &self,
+        data: &MediaServer,
+        discord: &Http,
+        guild: GuildId,
+        id: u32,
+    ) -> Option<UserId> {
         let cell = self.cell(guild, id);
         let found = cell
             .get_or_try_init(|| async {
@@ -441,7 +455,12 @@ impl Members {
 }
 
 impl Viewer {
-    fn load(ctx: Context<'_>, user: Option<Requester>, admin: bool, filter: Filter) -> Self {
+    fn load<U: BotData, E: BotError>(
+        ctx: Context<'_, U, E>,
+        user: Option<Requester>,
+        admin: bool,
+        filter: Filter,
+    ) -> Self {
         Self {
             user,
             admin,
@@ -468,7 +487,7 @@ impl Viewer {
 
     /// How to show Seerr user `by`: a mention if they linked a Discord account in Seerr and are
     /// in this server, else their Seerr name. A mention in an embed never pings.
-    async fn name(&self, data: &Data, by: &RequestedBy) -> String {
+    async fn name(&self, data: &MediaServer, by: &RequestedBy) -> String {
         let member = match self.guild {
             Some(guild) => data.members.get(data, &self.discord, guild, by.id).await,
             None => None,
@@ -487,7 +506,7 @@ impl Viewer {
     /// `None` if they take longer than that.
     async fn details(
         &self,
-        data: &Data,
+        data: &MediaServer,
         media: Media,
         wait: Option<Duration>,
     ) -> Result<Option<Details>> {
@@ -515,7 +534,7 @@ impl Viewer {
 
     /// The profiles `request` can be changed between: the default HD or 4K server's, if that's
     /// where it's going. Admins only; without them there's no quality menu.
-    async fn profiles(&self, data: &Data, request: &Request) -> Option<&Profiles> {
+    async fn profiles(&self, data: &MediaServer, request: &Request) -> Option<&Profiles> {
         if !self.admin {
             return None;
         }
@@ -550,7 +569,7 @@ struct Screen {
 impl Screen {
     /// Fetches and renders `view`. A card whose request is gone shows its page instead, and a
     /// page or card past the end of the list shows the last one.
-    async fn build(data: &Data, viewer: &Viewer, view: View, id: &str) -> Result<Self> {
+    async fn build(data: &MediaServer, viewer: &Viewer, view: View, id: &str) -> Result<Self> {
         let (filter, requester) = (viewer.filter.seerr(), viewer.requester());
         match view {
             View::Card {
@@ -618,7 +637,7 @@ impl Screen {
     }
 
     /// Page `page` of the list, with a menu to open each request on it
-    async fn list(data: &Data, viewer: &Viewer, page: usize, id: &str) -> Result<Self> {
+    async fn list(data: &MediaServer, viewer: &Viewer, page: usize, id: &str) -> Result<Self> {
         let (filter, requester) = (viewer.filter.seerr(), viewer.requester());
         let mut page = page;
         let mut listed = data
@@ -797,7 +816,7 @@ impl Screen {
     /// the list, details that take longer than [`LIST_WAIT`] are left for later, showing
     /// [`Self::loading`] meanwhile, as do ones that failed.
     async fn card(
-        data: &Data,
+        data: &MediaServer,
         viewer: &Viewer,
         position: Option<(usize, usize)>,
         request: Request,
@@ -1038,7 +1057,7 @@ impl Screen {
     /// A card in the list while its details are `late`, or after they failed: what the request
     /// itself says, its title if it's been seen before, and buttons only to move on or refresh
     async fn loading(
-        data: &Data,
+        data: &MediaServer,
         viewer: &Viewer,
         (index, total): (usize, usize),
         request: Request,
@@ -1119,7 +1138,7 @@ impl Screen {
     /// approve: the viewer isn't an admin, or the request is gone, no longer pending, or on its
     /// own.
     async fn batch(
-        data: &Data,
+        data: &MediaServer,
         viewer: &Viewer,
         index: Option<usize>,
         request: u32,
@@ -1245,7 +1264,7 @@ struct Card {
 impl Card {
     /// Does `action` if the card allows it, returning what to tell the invoker, if anything. A
     /// change that worked shows on the card instead.
-    async fn act(&self, data: &Data, viewer: &Viewer, action: Action) -> Option<String> {
+    async fn act(&self, data: &MediaServer, viewer: &Viewer, action: Action) -> Option<String> {
         let editable = viewer.profiles(data, &self.request).await.is_some();
         let result = match action {
             Action::Go(_) => return None,
@@ -1291,7 +1310,7 @@ impl Card {
 
 /// The default HD and 4K servers' movie and show quality profiles, for admins to change
 /// requests between and for requesting
-pub(super) async fn profiles(data: &Data) -> Vec<Profiles> {
+pub(super) async fn profiles(data: &MediaServer) -> Vec<Profiles> {
     let mut cached = data.profiles.0.lock().await;
     if let Some((at, profiles)) = &*cached
         && at.elapsed() < PROFILES_TTL
@@ -1337,7 +1356,7 @@ pub struct ProfileCache(tokio::sync::Mutex<Option<(Instant, Vec<Profiles>)>>);
 
 /// `request` as a post in `guild`'s channels, with buttons for admins
 pub async fn post_card(
-    data: &Data,
+    data: &MediaServer,
     discord: Arc<Http>,
     guild: Option<GuildId>,
     request: Request,
@@ -1351,7 +1370,7 @@ pub async fn post_card(
 /// What a post of request `id` in `guild`'s channels looks like now, and whether the request is
 /// still open, so it may change again: not declined or done. `None` if it's gone from Seerr.
 pub async fn post_now(
-    data: &Data,
+    data: &MediaServer,
     discord: &Arc<Http>,
     guild: Option<GuildId>,
     id: u32,
@@ -1408,7 +1427,7 @@ fn gone_embed(old: Option<&Embed>) -> CreateEmbed {
 /// can refresh; everything else is for admins. Other presses are left alone.
 pub async fn post_press(
     ctx: &serenity::Context,
-    data: &Data,
+    data: &MediaServer,
     press: &ComponentInteraction,
 ) -> Result<()> {
     let Some((request, action)) = press
@@ -1548,7 +1567,7 @@ pub async fn post_press(
 
 /// Approves `batch`, requests by id with their titles, one at a time. Returns which couldn't be
 /// approved and why, if any.
-async fn approve_all(data: &Data, batch: &[(u32, String)]) -> Option<String> {
+async fn approve_all(data: &MediaServer, batch: &[(u32, String)]) -> Option<String> {
     let mut failed = Vec::new();
     for (id, title) in batch {
         let why = match data.seerr.review(&data.http, *id, true).await {
@@ -1566,7 +1585,7 @@ async fn approve_all(data: &Data, batch: &[(u32, String)]) -> Option<String> {
 
 /// `request`'s batch: its requester's pending requests, oldest first, in an unbroken run with it
 /// where each was made within [`BATCH_GAP`] of the one before
-async fn batch_of(data: &Data, request: &Request) -> Result<Vec<Request>> {
+async fn batch_of(data: &MediaServer, request: &Request) -> Result<Vec<Request>> {
     let Some(by) = &request.requested_by else {
         return Ok(Vec::new());
     };

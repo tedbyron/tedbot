@@ -1063,6 +1063,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "poise-jellyfin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "futures",
+ "poise",
+ "quick-xml",
+ "reqwest 0.13.5",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "poise_macros"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1763,16 +1781,11 @@ name = "tedbot"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "axum",
- "chrono",
- "futures",
  "poise",
- "quick-xml",
+ "poise-jellyfin",
  "reqwest 0.12.28",
  "reqwest 0.13.5",
- "rustix",
  "serde",
- "serde_json",
  "tokio",
  "toml",
  "tracing",

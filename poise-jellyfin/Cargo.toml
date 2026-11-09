@@ -1,0 +1,30 @@
+[package]
+name = "poise-jellyfin"
+version = "0.1.0"
+edition.workspace = true
+description = "Jellyfin media server commands for poise Discord bots: requests, streams, live TV"
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords = ["discord", "jellyfin", "poise"]
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+axum = { version = "0.8.9", default-features = false, features = [
+  "http1",
+  "tokio",
+] }
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+futures = "0.3.34"
+poise.workspace = true
+quick-xml = { version = "0.42.0", features = ["serialize"] }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net", "process", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+toml.workspace = true

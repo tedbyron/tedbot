@@ -17,8 +17,10 @@ api_key = ''
 # url = 'http://localhost:8096'
 # The Moonfin plugin is installed, so "now available" posts should link to Moonfin Web
 # moonfin = true
-# Jellyfin's launchd agent, which admins can restart with /restart
-# launchd_label = 'org.nixos.jellyfin'
+# Restarts Jellyfin for /restart, run without a shell. Without it, Jellyfin is
+# asked to restart itself, which it can't do if the process is hanging. For example:
+# restart_command = ['sh', '-c', 'launchctl kickstart -k gui/$(id -u)/org.nixos.jellyfin']
+# restart_command = ['systemctl', '--user', 'restart', 'jellyfin']
 
 [seerr]
 api_key = ''

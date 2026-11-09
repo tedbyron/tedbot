@@ -1,8 +1,8 @@
-//! Jellyfin API client. Only the parts the bot uses.
+//! Jellyfin API client. Only the parts the commands use.
 
-use std::{net::IpAddr, time::Duration};
+use std::{fmt, net::IpAddr, time::Duration};
 
-use anyhow::Result;
+use reqwest::Result;
 use serde::Deserialize;
 
 /// Jellyfin's time unit: 100 ns
@@ -10,14 +10,18 @@ const TICKS_PER_SECOND: u64 = 10_000_000;
 
 /// Where to reach Jellyfin and how to authenticate. The HTTP client is passed in per call so the
 /// bot shares one connection pool.
-#[derive(Debug)]
 pub struct Jellyfin {
     pub url: String,
     pub api_key: String,
-    /// Whether it has the Moonfin plugin
-    pub moonfin: bool,
-    /// Its launchd agent's label, for `/restart`
-    pub launchd_label: String,
+}
+
+/// Leaves out the API key
+impl fmt::Debug for Jellyfin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Jellyfin")
+            .field("url", &self.url)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Response of `GET /Items`. Only the fields we read are deserialized.
@@ -174,6 +178,19 @@ impl Jellyfin {
             .send()
             .await
             .is_ok_and(|r| r.status().is_success())
+    }
+
+    /// Asks Jellyfin to restart itself. Needs an API key, which counts as an admin.
+    pub async fn restart(&self, http: &reqwest::Client) -> Result<()> {
+        http.post(format!("{}/System/Restart", self.url.trim_end_matches('/')))
+            .header(
+                "Authorization",
+                format!("MediaBrowser Token=\"{}\"", self.api_key),
+            )
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
     }
 
     /// Sessions that are playing something, in Jellyfin's order
