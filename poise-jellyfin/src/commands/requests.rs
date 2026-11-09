@@ -18,12 +18,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context as _, Result};
 use chrono::DateTime;
 use futures::{
     StreamExt as _,
     future::{BoxFuture, join_all},
 };
+use moka::future::Cache;
 use poise::{
     ChoiceParameter, CreateReply, command,
     serenity_prelude::{
@@ -45,8 +45,9 @@ use super::{
     seerr_user,
 };
 use crate::{
-    BotData, BotError, Context, MediaServer,
+    Context, Data, Error, MediaServer, Result,
     arr::Download,
+    error::chain,
     seerr::{
         self, Cancellable, Changed, Details, Media, Profiles, Request, RequestStatus, RequestedBy,
         Requester, Status,
@@ -81,7 +82,7 @@ const POST: &str = "request-post:";
 
 /// Which requests to list
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ChoiceParameter)]
-pub enum Filter {
+pub(crate) enum Filter {
     #[default]
     #[name = "All"]
     All,
@@ -110,15 +111,15 @@ impl Filter {
 
 /// See your recent requests
 #[command(check = "super::linked", slash_command, ephemeral)]
-pub async fn requests<U: BotData, E: BotError>(
+pub(crate) async fn requests<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     #[description = "Only requests that are"] status: Option<Filter>,
 ) -> Result<(), E> {
     requests_run(ctx, status).await.map_err(E::from)
 }
 
-/// [`requests()`], failing with [`anyhow::Error`]
-async fn requests_run<U: BotData, E: BotError>(
+/// [`requests()`], failing with [`Error`](crate::Error)
+async fn requests_run<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     status: Option<Filter>,
 ) -> Result<()> {
@@ -171,7 +172,7 @@ async fn requests_run<U: BotData, E: BotError>(
                 let mut next = match next {
                     Ok(next) => next,
                     Err(e) => {
-                        warn!("Loading requests: {e:#}");
+                        warn!("Loading requests: {}", chain(&e));
                         continue;
                     }
                 };
@@ -193,7 +194,7 @@ async fn requests_run<U: BotData, E: BotError>(
                     }
                 };
                 if let Err(e) = edited {
-                    warn!("Showing late request details: {e:#}");
+                    warn!("Showing late request details: {}", chain(&e));
                 }
                 continue;
             }
@@ -278,7 +279,7 @@ async fn requests_run<U: BotData, E: BotError>(
                     .await?;
             }
             Err(e) => {
-                warn!("Loading requests: {e:#}");
+                warn!("Loading requests: {}", chain(&e));
                 notice.get_or_insert_with(|| UNREACHABLE.into());
             }
         }
@@ -310,7 +311,7 @@ fn fetch_late<'a>(data: &'a MediaServer, late: &[Media]) -> Option<BoxFuture<'a,
                 .seerr
                 .details(&data.http, media)
                 .await
-                .inspect_err(|e| warn!("Fetching {media}: {e:#}"))
+                .inspect_err(|e| warn!("Fetching {media}: {}", chain(&e)))
                 .ok();
             (media, details)
         }))
@@ -408,11 +409,14 @@ struct Viewer {
 /// post. Discord allows only 5 member lookups a second per server, and the request posts' sweep
 /// would otherwise look up every post's requester and approver, so each is looked up once, and
 /// callers asking at the same time wait for the one lookup. They're kept until the bot restarts.
-#[derive(Debug, Default)]
-pub struct Members(Mutex<HashMap<(GuildId, u32), Member>>);
+#[derive(Debug)]
+pub(crate) struct Members(Cache<(GuildId, u32), Option<UserId>>);
 
-/// One Seerr user's Discord account in a server, once looked up
-type Member = Arc<OnceCell<Option<UserId>>>;
+impl Default for Members {
+    fn default() -> Self {
+        Self(Cache::builder().build())
+    }
+}
 
 impl Members {
     /// Seerr user `id`'s Discord account, if they linked one in Seerr and it's in `guild`
@@ -423,39 +427,29 @@ impl Members {
         guild: GuildId,
         id: u32,
     ) -> Option<UserId> {
-        let cell = self.cell(guild, id);
-        let found = cell
-            .get_or_try_init(|| async {
-                let Some(user) = data.seerr.discord_id(&data.http, id).await? else {
-                    return Ok::<_, anyhow::Error>(None);
-                };
-                Ok(guild.member(discord, user).await.is_ok().then_some(user))
-            })
-            .await;
-        match found {
-            Ok(&member) => member,
-            Err(e) => {
-                // Not kept, so the next call tries again
-                warn!("Fetching Seerr user {id}: {e:#}");
-                self.0.lock().unwrap().remove(&(guild, id));
-                None
-            }
-        }
-    }
-
-    /// Where Seerr user `id`'s account in `guild` is or will be
-    fn cell(&self, guild: GuildId, id: u32) -> Member {
-        Arc::clone(self.0.lock().unwrap().entry((guild, id)).or_default())
+        let lookup = async {
+            let Some(user) = data.seerr.discord_id(&data.http, id).await? else {
+                return Ok::<_, Error>(None);
+            };
+            Ok(guild.member(discord, user).await.is_ok().then_some(user))
+        };
+        // A failure isn't kept, so the next call tries again
+        self.0
+            .try_get_with((guild, id), lookup)
+            .await
+            .inspect_err(|e| warn!("Fetching Seerr user {id}: {}", chain(&**e)))
+            .ok()
+            .flatten()
     }
 
     /// Forgets every lookup, so the next ones see accounts linked or servers joined since
-    pub fn clear(&self) {
-        self.0.lock().unwrap().clear();
+    pub(crate) fn clear(&self) {
+        self.0.invalidate_all();
     }
 }
 
 impl Viewer {
-    fn load<U: BotData, E: BotError>(
+    fn load<U: Data, E: From<Error>>(
         ctx: Context<'_, U, E>,
         user: Option<Requester>,
         admin: bool,
@@ -514,7 +508,7 @@ impl Viewer {
         if let Some(arrived) = arrived {
             return arrived
                 .map(Some)
-                .context("Seerr didn't answer in the background either");
+                .ok_or_else(|| Error::seerr("didn't answer in the background either"));
         }
         let fetch = data.seerr.details(&data.http, media);
         match wait {
@@ -662,7 +656,7 @@ impl Screen {
                 Ok(Some(details)) => details,
                 Ok(None) => return Some(Err(media)),
                 Err(e) => {
-                    warn!("Fetching {media}: {e:#}");
+                    warn!("Fetching {media}: {}", chain(&e));
                     return None;
                 }
             };
@@ -823,19 +817,19 @@ impl Screen {
         id: &str,
     ) -> Result<Self> {
         let (index, total) = position.unwrap_or((0, 1));
-        let media = request
-            .media()
-            .context("request isn't for a movie or show")?;
+        let media = request.media().ok_or_else(|| {
+            Error::seerr(format!("request {} isn't for a movie or show", request.id))
+        })?;
         let mut details = match position {
             None => viewer
                 .details(data, media, None)
                 .await?
-                .context("details missing without a wait")?,
+                .ok_or(Error::Missing("Details fetched without a wait"))?,
             Some(position) => match viewer.details(data, media, Some(LIST_WAIT)).await {
                 Ok(Some(details)) => details,
                 found => {
                     let late = found
-                        .inspect_err(|e| warn!("Fetching {media}: {e:#}"))
+                        .inspect_err(|e| warn!("Fetching {media}: {}", chain(&e)))
                         .is_ok();
                     let screen = Self::loading(data, viewer, position, request, media, late, id);
                     return Ok(screen.await);
@@ -902,7 +896,13 @@ impl Screen {
         let batch = if reviewable {
             batch_of(data, &request)
                 .await
-                .inspect_err(|e| warn!("Fetching the batch of request {}: {e:#}", request.id))
+                .inspect_err(|e| {
+                    warn!(
+                        "Fetching the batch of request {}: {}",
+                        request.id,
+                        chain(&e)
+                    )
+                })
                 .map_or(0, |b| b.len())
         } else {
             0
@@ -1163,7 +1163,7 @@ impl Screen {
             data.seerr
                 .details(&data.http, media)
                 .await
-                .inspect_err(|e| warn!("Fetching {media}: {e:#}"))
+                .inspect_err(|e| warn!("Fetching {media}: {}", chain(&e)))
                 .ok()
         }))
         .await;
@@ -1301,7 +1301,7 @@ impl Card {
             Ok(Changed::Done) => None,
             Ok(Changed::Refused(message)) => Some(message),
             Err(e) => {
-                warn!("Changing request {}: {e:#}", self.request.id);
+                warn!("Changing request {}: {}", self.request.id, chain(&e));
                 Some(UNREACHABLE.into())
             }
         }
@@ -1311,12 +1311,16 @@ impl Card {
 /// The default HD and 4K servers' movie and show quality profiles, for admins to change
 /// requests between and for requesting
 pub(super) async fn profiles(data: &MediaServer) -> Vec<Profiles> {
-    let mut cached = data.profiles.0.lock().await;
-    if let Some((at, profiles)) = &*cached
-        && at.elapsed() < PROFILES_TTL
-    {
-        return profiles.clone();
-    }
+    // A partial fetch is returned as an error, so it isn't kept and the next call tries again
+    data.profiles
+        .0
+        .try_get_with((), fetch_profiles(data))
+        .await
+        .unwrap_or_else(|partial| partial.0.clone())
+}
+
+/// [`profiles`], or those that could be fetched as an error if any couldn't
+async fn fetch_profiles(data: &MediaServer) -> Result<Vec<Profiles>, Partial> {
     let ok = AtomicBool::new(true);
     let ok = &ok;
     let profiles = |media, is_4k| async move {
@@ -1324,7 +1328,7 @@ pub(super) async fn profiles(data: &MediaServer) -> Vec<Profiles> {
             .profiles(&data.http, media, is_4k)
             .await
             .inspect_err(|e| {
-                warn!("Fetching quality profiles: {e:#}");
+                warn!("Fetching quality profiles: {}", chain(&e));
                 ok.store(false, Ordering::Relaxed);
             })
             .ok()
@@ -1338,24 +1342,33 @@ pub(super) async fn profiles(data: &MediaServer) -> Vec<Profiles> {
     )
     .into();
     let profiles: Vec<Profiles> = all.into_iter().flatten().collect();
-    // Not kept if any failed, so the next call tries again
     if ok.load(Ordering::Relaxed) {
-        *cached = Some((Instant::now(), profiles.clone()));
+        Ok(profiles)
+    } else {
+        Err(Partial(profiles))
     }
-    profiles
 }
+
+/// The profiles that could be fetched, when some couldn't
+struct Partial(Vec<Profiles>);
 
 /// How long [`ProfileCache`] keeps the profiles. They only change when servers are set up in
 /// Seerr, and Seerr asks Radarr and Sonarr for them each time, which can take a second.
 const PROFILES_TTL: Duration = Duration::from_secs(10 * 60);
 
-/// The last [`profiles`] fetched in full, and when. Callers asking at the same time wait for the
-/// one fetch.
-#[derive(Debug, Default)]
-pub struct ProfileCache(tokio::sync::Mutex<Option<(Instant, Vec<Profiles>)>>);
+/// The last [`profiles`] fetched in full, for [`PROFILES_TTL`]. Callers asking at the same time
+/// wait for the one fetch.
+#[derive(Debug)]
+pub(crate) struct ProfileCache(Cache<(), Vec<Profiles>>);
+
+impl Default for ProfileCache {
+    fn default() -> Self {
+        Self(Cache::builder().time_to_live(PROFILES_TTL).build())
+    }
+}
 
 /// `request` as a post in `guild`'s channels, with buttons for admins
-pub async fn post_card(
+pub(crate) async fn post_card(
     data: &MediaServer,
     discord: Arc<Http>,
     guild: Option<GuildId>,
@@ -1369,7 +1382,7 @@ pub async fn post_card(
 
 /// What a post of request `id` in `guild`'s channels looks like now, and whether the request is
 /// still open, so it may change again: not declined or done. `None` if it's gone from Seerr.
-pub async fn post_now(
+pub(crate) async fn post_now(
     data: &MediaServer,
     discord: &Arc<Http>,
     guild: Option<GuildId>,
@@ -1387,7 +1400,11 @@ pub async fn post_now(
 }
 
 /// Marks post `message` in `channel` as being of a request no longer in Seerr
-pub async fn mark_gone(discord: &Http, channel: ChannelId, message: MessageId) -> Result<()> {
+pub(crate) async fn mark_gone(
+    discord: &Http,
+    channel: ChannelId,
+    message: MessageId,
+) -> Result<()> {
     let old = channel.message(discord, message).await?;
     let edit = EditMessage::new()
         .embed(gone_embed(old.embeds.first()))
@@ -1397,7 +1414,7 @@ pub async fn mark_gone(discord: &Http, channel: ChannelId, message: MessageId) -
 }
 
 /// The request `message` is a post of, if it's one
-pub fn post_request(message: &Message) -> Option<u32> {
+pub(crate) fn post_request(message: &Message) -> Option<u32> {
     message
         .components
         .iter()
@@ -1425,7 +1442,7 @@ fn gone_embed(old: Option<&Embed>) -> CreateEmbed {
 
 /// Handles a press on a request post's buttons, or on the batch confirmation they open. Anyone
 /// can refresh; everything else is for admins. Other presses are left alone.
-pub async fn post_press(
+pub(crate) async fn post_press(
     ctx: &serenity::Context,
     data: &MediaServer,
     press: &ComponentInteraction,
@@ -1475,7 +1492,7 @@ pub async fn post_press(
                 .components(screen.components),
             Ok(None) => EditInteractionResponse::new().content("Nothing to approve together now"),
             Err(e) => {
-                warn!("Fetching the batch of request {request}: {e:#}");
+                warn!("Fetching the batch of request {request}: {}", chain(&e));
                 EditInteractionResponse::new().content(UNREACHABLE)
             }
         };
@@ -1498,7 +1515,7 @@ pub async fn post_press(
                 .unwrap_or_else(|| format!("Approved {} requests", screen.batch.len())),
             Ok(None) => "Nothing to approve together now".into(),
             Err(e) => {
-                warn!("Fetching the batch of request {request}: {e:#}");
+                warn!("Fetching the batch of request {request}: {}", chain(&e));
                 UNREACHABLE.into()
             }
         };
@@ -1552,7 +1569,7 @@ pub async fn post_press(
             press.edit_response(ctx, edit).await?;
         }
         Err(e) => {
-            warn!("Loading request {request}: {e:#}");
+            warn!("Loading request {request}: {}", chain(&e));
             notice.get_or_insert_with(|| UNREACHABLE.into());
         }
     }
@@ -1574,7 +1591,7 @@ async fn approve_all(data: &MediaServer, batch: &[(u32, String)]) -> Option<Stri
             Ok(Changed::Done) => continue,
             Ok(Changed::Refused(message)) => message,
             Err(e) => {
-                warn!("Approving request {id}: {e:#}");
+                warn!("Approving request {id}: {}", chain(&e));
                 "couldn't reach Seerr".into()
             }
         };

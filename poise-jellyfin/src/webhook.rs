@@ -19,7 +19,6 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context as _, Result};
 use axum::{
     Router,
     body::Bytes,
@@ -39,9 +38,10 @@ use tokio::{net::TcpListener, time::MissedTickBehavior};
 use tracing::{error, info, warn};
 
 use crate::{
-    Config, MediaServer,
+    Config, Error, MediaServer, Result,
     announce::{self, Event, Targets},
     commands::requests::{mark_gone, post_now, post_request},
+    error::chain,
 };
 
 /// How often open requests' posts are rebuilt
@@ -112,7 +112,7 @@ impl Listener {
     async fn bind_port(port: u16, forward: Vec<String>, targets: Targets) -> Result<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
             .await
-            .with_context(|| format!("binding localhost:{port} for the webhook"))?;
+            .map_err(|source| Error::Bind { port, source })?;
         Ok(Self {
             listener,
             forward,
@@ -274,7 +274,10 @@ impl Hook {
             match self.refresh_post(channel, message, id).await {
                 Ok(still) => open |= still,
                 Err(e) => {
-                    warn!("Refreshing request {id}'s post in channel {channel}: {e:#}");
+                    warn!(
+                        "Refreshing request {id}'s post in channel {channel}: {}",
+                        chain(&e)
+                    );
                     open = true;
                 }
             }
@@ -351,7 +354,7 @@ impl Hook {
             let found = match posts_in(&self.discord, channel, me).await {
                 Ok(found) => found,
                 Err(e) => {
-                    warn!("Finding request posts in channel {channel}: {e:#}");
+                    warn!("Finding request posts in channel {channel}: {}", chain(&e));
                     continue;
                 }
             };
@@ -379,7 +382,7 @@ impl Hook {
             Ok(Some(request)) => request,
             Ok(None) => return,
             Err(e) => {
-                warn!("Fetching request {id}: {e:#}");
+                warn!("Fetching request {id}: {}", chain(&e));
                 self.posted.lock().unwrap().remove(&key);
                 return;
             }
@@ -395,7 +398,7 @@ impl Hook {
             }
             Ok(_) => {}
             Err(e) => {
-                warn!("Posting request {id} ({event:?}): {e:#}");
+                warn!("Posting request {id} ({event:?}): {}", chain(&e));
                 self.posted.lock().unwrap().remove(&key);
             }
         }
@@ -492,9 +495,6 @@ mod tests {
         seerr::{Links, Seerr, Titles},
     };
 
-    /// The Authorization header and body the upstream got
-    type Seen = Arc<Mutex<Option<(String, Bytes)>>>;
-
     #[test]
     fn moonfin_payload() {
         let body = r#"{
@@ -516,30 +516,34 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the mock server has to outlive the requests"
+    )]
     async fn forwards() {
-        let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-        let upstream_addr = upstream.local_addr().unwrap();
-        let seen: Seen = Arc::default();
-        let app = Router::new()
-            .route("/ok", post(|| async { StatusCode::OK }))
-            .route(
-                "/hook",
-                post(
-                    |State(seen): State<Seen>, headers: HeaderMap, body: Bytes| async move {
-                        let auth = headers[header::AUTHORIZATION].to_str().unwrap().to_owned();
-                        *seen.lock().unwrap() = Some((auth, body));
-                        (StatusCode::UNAUTHORIZED, "nope")
-                    },
-                ),
-            )
-            .with_state(seen.clone());
-        tokio::spawn(async move { axum::serve(upstream, app).await });
+        let body = r#"{"notification_type": "MEDIA_PENDING", "request": {"request_id": "1"}}"#;
+        let mut upstream = mockito::Server::new_async().await;
+        let ok = upstream
+            .mock("POST", "/ok")
+            .match_body(body)
+            .create_async()
+            .await;
+        // Answered with, since it failed
+        let hook = upstream
+            .mock("POST", "/hook")
+            .match_header(header::AUTHORIZATION.as_str(), "secret")
+            .match_header(header::CONTENT_TYPE.as_str(), "application/json")
+            .match_body(body)
+            .with_status(401)
+            .with_body("nope")
+            .create_async()
+            .await;
 
         let listener = Listener::bind_port(
             0,
             vec![
-                format!("http://{upstream_addr}/ok"),
-                format!("http://{upstream_addr}/hook"),
+                format!("{}/ok", upstream.url()),
+                format!("{}/hook", upstream.url()),
             ],
             Targets::default(),
         )
@@ -575,7 +579,6 @@ mod tests {
         }));
         listener.spawn(Arc::new(Http::new("")), data);
 
-        let body = r#"{"notification_type": "MEDIA_PENDING", "request": {"request_id": "1"}}"#;
         let response = reqwest::Client::new()
             .post(format!("http://{addr}/seerr"))
             .header(header::AUTHORIZATION, "secret")
@@ -586,9 +589,8 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.text().await.unwrap(), "nope");
-        let (auth, forwarded) = seen.lock().unwrap().take().unwrap();
-        assert_eq!(auth, "secret");
-        assert_eq!(forwarded, body.as_bytes());
+        ok.assert_async().await;
+        hook.assert_async().await;
 
         let health = reqwest::get(format!("http://{addr}/health")).await.unwrap();
         assert_eq!(health.status(), StatusCode::OK);

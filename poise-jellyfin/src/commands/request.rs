@@ -11,7 +11,6 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use anyhow::{Context as _, Result};
 use poise::{
     CreateReply, command,
     serenity_prelude::{
@@ -26,8 +25,9 @@ use tracing::warn;
 
 use super::{escape, is_admin, remove_buttons, requests::profiles, seerr_user};
 use crate::{
-    BotData, BotError, Context, MediaServer,
+    Context, Data, Error, MediaServer, Result,
     arr::{Arr, Download, Removed},
+    error::chain,
     seerr::{
         self, Cancellable, Changed, Details, Media, Profiles, Quotas, Request, RequestStatus,
         Requested, Requester, SearchResult, Status,
@@ -49,7 +49,7 @@ const UNREACHABLE: &str = "Couldn't reach Seerr, try again in a bit \u{1fae4}";
 
 /// Request a movie or show
 #[command(check = "super::linked", slash_command, ephemeral)]
-pub async fn request<U: BotData, E: BotError>(
+pub(crate) async fn request<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     #[description = "Movie or show title"]
     #[autocomplete = "autocomplete_title"]
@@ -58,8 +58,8 @@ pub async fn request<U: BotData, E: BotError>(
     request_run(ctx, title).await.map_err(E::from)
 }
 
-/// [`request()`], failing with [`anyhow::Error`]
-async fn request_run<U: BotData, E: BotError>(ctx: Context<'_, U, E>, title: String) -> Result<()> {
+/// [`request()`], failing with [`Error`](crate::Error)
+async fn request_run<U: Data, E: From<Error>>(ctx: Context<'_, U, E>, title: String) -> Result<()> {
     ctx.defer_ephemeral().await?;
 
     let data = ctx.data().server();
@@ -160,7 +160,7 @@ async fn request_run<U: BotData, E: BotError>(ctx: Context<'_, U, E>, title: Str
                     .await?;
             }
             Err(e) => {
-                warn!("Loading request card: {e:#}");
+                warn!("Loading request card: {}", chain(&e));
                 notice.get_or_insert_with(|| UNREACHABLE.into());
             }
         }
@@ -179,7 +179,7 @@ async fn request_run<U: BotData, E: BotError>(ctx: Context<'_, U, E>, title: Str
 
 /// Suggests up to 25 movies and shows (Discord's limit), filling in `movie:id` or `tv:id` so the
 /// command opens that exact one. A failed search gives no suggestions rather than an error.
-async fn autocomplete_title<U: BotData, E: BotError>(
+async fn autocomplete_title<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     partial: &str,
 ) -> CreateAutocompleteResponse {
@@ -206,7 +206,7 @@ async fn autocomplete_title<U: BotData, E: BotError>(
             .take(25)
             .collect(),
         Err(e) => {
-            warn!("Searching Seerr for autocomplete: {e:#}");
+            warn!("Searching Seerr for autocomplete: {}", chain(&e));
             Vec::new()
         }
     };
@@ -263,7 +263,7 @@ impl Viewer {
         data.seerr
             .quotas(&data.http, user.id)
             .await
-            .inspect_err(|e| warn!("Fetching quotas: {e:#}"))
+            .inspect_err(|e| warn!("Fetching quotas: {}", chain(&e)))
             .ok()
     }
 
@@ -539,7 +539,7 @@ impl Card {
             Ok(Requested::Made) => (None, true),
             Ok(Requested::Refused(message)) => (Some(message), false),
             Err(e) => {
-                warn!("Requesting {}: {e:#}", self.media);
+                warn!("Requesting {}: {}", self.media, chain(&e));
                 (Some(UNREACHABLE.into()), false)
             }
         }
@@ -714,8 +714,9 @@ async fn downloads_if(
     downloads
         .inspect_err(|e| {
             warn!(
-                "Checking {}'s downloads of {media}: {e:#}",
-                arr_name(media, is_4k)
+                "Checking {}'s downloads of {media}: {}",
+                arr_name(media, is_4k),
+                chain(&e)
             );
         })
         .unwrap_or_default()
@@ -725,7 +726,12 @@ async fn downloads_if(
 /// downloaded if Sonarr has a file for every monitored episode. Seerr counts a season's episodes
 /// by TMDB, which can split them differently from TVDB, which Sonarr goes by. Best effort, like
 /// [`downloads_if`].
-pub async fn check_partial(data: &MediaServer, details: &mut Details, media: Media, is_4k: bool) {
+pub(crate) async fn check_partial(
+    data: &MediaServer,
+    details: &mut Details,
+    media: Media,
+    is_4k: bool,
+) {
     let Some(info) = &details.media_info else {
         return;
     };
@@ -742,8 +748,9 @@ pub async fn check_partial(data: &MediaServer, details: &mut Details, media: Med
     match arr.complete_seasons(&data.http, tvdb_id).await {
         Ok(complete) => details.mark_downloaded(&complete, is_4k),
         Err(e) => warn!(
-            "Checking {}'s files of {media}: {e:#}",
-            arr_name(media, is_4k)
+            "Checking {}'s files of {media}: {}",
+            arr_name(media, is_4k),
+            chain(&e)
         ),
     }
 }
@@ -802,7 +809,7 @@ pub(super) async fn cancel(
         }
         Ok(Some(refused)) => (refused, changed),
         Err(e) => {
-            warn!("Cancelling requests for {media}: {e:#}");
+            warn!("Cancelling requests for {media}: {}", chain(&e));
             (
                 "Couldn't cancel it, try again in a bit \u{1fae4}".into(),
                 changed,
@@ -831,11 +838,11 @@ async fn try_cancel(
             continue;
         }
         let name = arr_name(media, is_4k);
-        let arr = arr(data, media, is_4k).with_context(|| format!("{name} isn't configured"))?;
+        let arr = arr(data, media, is_4k).ok_or(Error::NotConfigured(name))?;
         let removed = match media {
             Media::Movie(tmdb_id) => arr.remove_movie(&data.http, tmdb_id).await,
             Media::Tv(_) => {
-                let tvdb_id = tvdb_id.context("Seerr has no TVDB id")?;
+                let tvdb_id = tvdb_id.ok_or_else(|| Error::seerr("no TVDB id"))?;
                 let mut seasons: Vec<u32> = sent
                     .iter()
                     .flat_map(|c| c.seasons.iter().copied())
@@ -845,7 +852,10 @@ async fn try_cancel(
                 arr.remove_seasons(&data.http, tvdb_id, &seasons).await
             }
         }
-        .context(name)?;
+        .map_err(|e| Error::Arr {
+            service: name,
+            source: Box::new(e),
+        })?;
         if removed == Removed::Downloaded {
             return Ok(Some(
                 "It's already been downloaded, so it can't be cancelled".into(),
@@ -945,7 +955,7 @@ fn season_lines(seasons: &[(u32, &str, Status)]) -> String {
 }
 
 /// Ascending numbers with runs collapsed: `[1, 2, 3, 5]` -> "1–3, 5"
-pub fn ranges(numbers: &[u32]) -> String {
+pub(crate) fn ranges(numbers: &[u32]) -> String {
     let mut runs: Vec<(u32, u32)> = Vec::new();
     for &n in numbers {
         match runs.last_mut() {
@@ -966,7 +976,7 @@ pub fn ranges(numbers: &[u32]) -> String {
 }
 
 /// `s` cut at a word to at most `max` characters, with "…" if anything was cut
-pub fn truncate(s: &str, max: usize) -> String {
+pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();
     }

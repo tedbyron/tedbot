@@ -3,12 +3,11 @@
 //! the bot. Admins only; like `/restart`, Discord hides it from members without Administrator
 //! unless the server's Integrations settings give admins access.
 
-use anyhow::Result;
 use poise::command;
 use tracing::{info, warn};
 
 use super::is_admin;
-use crate::{BotData, BotError, Context};
+use crate::{Context, Data, Error, Result, error::chain};
 
 /// Find Discord accounts newly linked in Seerr
 #[command(
@@ -18,12 +17,14 @@ use crate::{BotData, BotError, Context};
     ephemeral,
     default_member_permissions = "ADMINISTRATOR"
 )]
-pub async fn refresh_users<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> Result<(), E> {
+pub(crate) async fn refresh_users<U: Data, E: From<Error>>(
+    ctx: Context<'_, U, E>,
+) -> Result<(), E> {
     refresh_users_run(ctx).await.map_err(E::from)
 }
 
-/// [`refresh_users()`], failing with [`anyhow::Error`]
-async fn refresh_users_run<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> Result<()> {
+/// [`refresh_users()`], failing with [`Error`](crate::Error)
+async fn refresh_users_run<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<()> {
     if !is_admin(ctx) {
         ctx.say("Only admins can refresh users").await?;
         return Ok(());
@@ -40,7 +41,7 @@ async fn refresh_users_run<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> R
             }
         }
         Err(e) => {
-            warn!("Refreshing Seerr users: {e:#}");
+            warn!("Refreshing Seerr users: {}", chain(&e));
             "Couldn't reach Seerr, try again in a bit \u{1fae4}".to_owned()
         }
     };

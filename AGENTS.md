@@ -11,11 +11,13 @@ home media server.
   (`seerr.rs`, `jellyfin.rs`, `arr.rs`, `ersatztv.rs`), the webhook
   (`webhook.rs`, which hands new and available requests to `announce.rs`), and
   the media server's config sections (`config.rs`). Its state is `MediaServer`;
-  commands are generic over the bot's data (`U: AsRef<MediaServer>`, the
-  `BotData` trait, `ctx.data().server()`) and error (`E: From<anyhow::Error>`,
-  `BotError`), each a thin `#[command]` wrapper around a `*_run` function that
-  returns `anyhow::Result`. `tedbot/` is just the bot: `main.rs` reads the
-  config (`config.rs` flattens the library's `Config` next to `[discord]` and
+  commands are generic over the bot's data (`U: AsRef<MediaServer>`, the `Data`
+  trait, `ctx.data().server()`) and error (`E: From<Error>`), each a thin
+  `#[command]` wrapper around a `*_run` function that returns the library's
+  `Result`. The library doesn't use anyhow: `error.rs` has its `thiserror`
+  `Error`, whose messages leave out their source, so logs print the whole chain
+  with `error::chain`. `tedbot/` is just the bot: `main.rs` reads the config
+  (`config.rs` flattens the library's `Config` next to `[discord]` and
   `log_level`), registers the commands, routes events to
   `poise_jellyfin::handle_event`, and starts the webhook (`Listener`) in `setup`
   once the gateway is ready. Its data is `MediaServer`, which holds its state in
@@ -29,8 +31,17 @@ home media server.
   0.12.
 - `flake.nix` exposes `packages.default` (crane with the rust-overlay
   toolchain), a devShell, and treefmt as `nix fmt`. `nix flake check` runs the
-  build, clippy (`-D warnings`), tests and formatting, sharing one dependency
-  build.
+  build, clippy (`-D warnings`), tests, formatting and `cargo deny` (bans,
+  licenses and sources; advisories need the network, so run `cargo deny check`
+  in the devShell), sharing one dependency build.
+- Lints are set once in the workspace `Cargo.toml` (`[workspace.lints]`),
+  including `missing_docs` and `unreachable_pub`: items in private modules are
+  `pub(crate)`.
+- Caches (the guide, quality profiles, who linked what, titles, members) are
+  `moka` caches, whose `try_get_with` makes concurrent callers share one fetch
+  and keeps no failures.
+- Upstream API clients are tested against `mockito` servers (`mod api` in
+  `seerr.rs` and `arr.rs`, and the webhook's forwarding).
 
 ## Media server it talks to
 

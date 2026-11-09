@@ -21,6 +21,18 @@ tokio = "1.54.1"
 toml = "1.1.8"
 tracing = "0.1.44"
 
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Fights unreachable_pub, which wants pub(crate) in private modules
+redundant_pub_crate = "allow"
+
 [profile.dev]
 debug = 0
 

@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result};
 use poise::serenity_prelude::{
     Channel, ChannelId, CreateActionRow, CreateAllowedMentions, CreateButton, CreateEmbed,
     CreateMessage, GuildId, Http, Mentionable as _, MessageId, UserId,
@@ -11,12 +10,13 @@ use poise::serenity_prelude::{
 use tracing::warn;
 
 use crate::{
-    MediaServer,
+    Error, MediaServer, Result,
     commands::{
         escape,
         request::{check_partial, ranges, truncate},
         requests::post_card,
     },
+    error::chain,
     seerr::{self, Request, RequestStatus, Status},
 };
 
@@ -27,7 +27,7 @@ const OVERVIEW_MAX: usize = 350;
 
 /// What happened to a request
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Event {
+pub(crate) enum Event {
     /// Made, whether it's waiting for approval or was approved automatically
     Requested,
     /// Its movie or seasons are in Jellyfin
@@ -36,13 +36,13 @@ pub enum Event {
 
 /// Where to post
 #[derive(Debug, Default)]
-pub struct Targets {
+pub(crate) struct Targets {
     pub requests: Vec<ChannelId>,
     pub available: Vec<ChannelId>,
 }
 
 impl Targets {
-    pub fn channels(&self, event: Event) -> &[ChannelId] {
+    pub(crate) fn channels(&self, event: Event) -> &[ChannelId] {
         match event {
             Event::Requested => &self.requests,
             Event::Available => &self.available,
@@ -54,7 +54,7 @@ impl Targets {
 /// card `/requests` shows admins, with its buttons. Available requests are skipped if what they
 /// asked for isn't all available after all. Fails if nothing was posted anywhere, so it can be
 /// tried again.
-pub async fn post(
+pub(crate) async fn post(
     discord: &Arc<Http>,
     data: &MediaServer,
     targets: &Targets,
@@ -100,7 +100,7 @@ pub async fn post(
                     .seerr
                     .discord_id(&data.http, by.id)
                     .await
-                    .inspect_err(|e| warn!("Fetching Seerr user {}: {e:#}", by.id))
+                    .inspect_err(|e| warn!("Fetching Seerr user {}: {}", by.id, chain(&e)))
                     .ok()
                     .flatten(),
                 None => None,
@@ -122,7 +122,9 @@ pub async fn post(
             }
         }
     }
-    anyhow::ensure!(!posts.is_empty(), "couldn't post in any channel");
+    if posts.is_empty() {
+        return Err(Error::NotPosted);
+    }
     Ok(posts)
 }
 
@@ -134,7 +136,7 @@ async fn available(
 ) -> Result<Option<(CreateEmbed, Vec<CreateActionRow>)>> {
     let media = request
         .media()
-        .context("request isn't for a movie or show")?;
+        .ok_or_else(|| Error::seerr(format!("request {} isn't for a movie or show", request.id)))?;
     let mut details = data.seerr.details(&data.http, media).await?;
     check_partial(data, &mut details, media, request.is_4k).await;
     if details.request_status(request) != Status::Available {

@@ -3,14 +3,15 @@
 
 use std::collections::HashMap;
 
-use anyhow::Result;
 use reqwest::Method;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
+use crate::{Error, Result};
+
 /// Where to reach Radarr or Sonarr and how to authenticate. The HTTP client is passed in per call
 /// so the bot shares one connection pool.
-pub struct Arr {
+pub(crate) struct Arr {
     pub url: String,
     pub api_key: String,
 }
@@ -35,7 +36,7 @@ struct Movie {
 
 /// What came of taking a request back out
 #[derive(Debug, PartialEq, Eq)]
-pub enum Removed {
+pub(crate) enum Removed {
     /// Removed, or never there
     Done,
     /// Some of it has been downloaded already, so nothing was touched
@@ -64,7 +65,7 @@ struct QueueItem {
 
 /// How far a download in Radarr's or Sonarr's queue has got
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Download {
+pub(crate) enum Download {
     /// A release was grabbed, but none of it has downloaded: it's waiting for the download
     /// client or for peers
     Queued,
@@ -149,7 +150,7 @@ impl Arr {
 
     /// Radarr: how far the furthest download of the movie with TMDB id `tmdb_id` has got.
     /// `None` if nothing's in the queue for it.
-    pub async fn movie_download(
+    pub(crate) async fn movie_download(
         &self,
         http: &reqwest::Client,
         tmdb_id: u32,
@@ -172,7 +173,7 @@ impl Arr {
 
     /// Sonarr: how far the furthest download of each season of the show with TVDB id `tvdb_id`
     /// has got, for seasons with anything in the queue
-    pub async fn season_downloads(
+    pub(crate) async fn season_downloads(
         &self,
         http: &reqwest::Client,
         tvdb_id: u32,
@@ -199,14 +200,22 @@ impl Arr {
 
     /// Sonarr: the seasons of the show with TVDB id `tvdb_id` with a file for every monitored
     /// episode that's aired
-    pub async fn complete_seasons(&self, http: &reqwest::Client, tvdb_id: u32) -> Result<Vec<u32>> {
+    pub(crate) async fn complete_seasons(
+        &self,
+        http: &reqwest::Client,
+        tvdb_id: u32,
+    ) -> Result<Vec<u32>> {
         let shows: Vec<Value> = self.get(http, &format!("/series?tvdbId={tvdb_id}")).await?;
         Ok(shows.first().map(complete).unwrap_or_default())
     }
 
     /// Radarr: removes the movie with TMDB id `tmdb_id` and its downloads, unless it's been
     /// downloaded already
-    pub async fn remove_movie(&self, http: &reqwest::Client, tmdb_id: u32) -> Result<Removed> {
+    pub(crate) async fn remove_movie(
+        &self,
+        http: &reqwest::Client,
+        tmdb_id: u32,
+    ) -> Result<Removed> {
         let movies: Vec<Movie> = self.get(http, &format!("/movie?tmdbId={tmdb_id}")).await?;
         if movies.iter().any(|m| m.has_file) {
             return Ok(Removed::Downloaded);
@@ -236,7 +245,7 @@ impl Arr {
     /// Sonarr: stops `seasons` of the show with TVDB id `tvdb_id` downloading, unless any of
     /// their episodes have been downloaded already. Other seasons are left alone. If that leaves
     /// nothing monitored and no files, the show is removed altogether.
-    pub async fn remove_seasons(
+    pub(crate) async fn remove_seasons(
         &self,
         http: &reqwest::Client,
         tvdb_id: u32,
@@ -247,7 +256,10 @@ impl Arr {
             return Ok(Removed::Done);
         };
         let Some(id) = show["id"].as_u64() else {
-            anyhow::bail!("Sonarr series without an id");
+            return Err(Error::Unexpected {
+                service: "Sonarr",
+                message: "series without an id".into(),
+            });
         };
 
         let in_seasons = |n: Option<u32>| n.is_some_and(|n| seasons.contains(&n));
@@ -382,5 +394,188 @@ mod tests {
                 {"seasonNumber": 1, "monitored": false}
             ]}"#
         )));
+    }
+
+    /// Mocked Radarr and Sonarr APIs, at `/api/v3` on `server`
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the mock server has to outlive the requests"
+    )]
+    mod api {
+        use mockito::{Matcher, Server, ServerGuard};
+        use serde_json::json;
+
+        use super::*;
+
+        fn arr(server: &ServerGuard) -> Arr {
+            Arr {
+                url: server.url(),
+                api_key: "key".into(),
+            }
+        }
+
+        #[tokio::test]
+        async fn downloaded_movie_kept() {
+            let mut server = Server::new_async().await;
+            server
+                .mock("GET", "/api/v3/movie")
+                .match_query(Matcher::UrlEncoded("tmdbId".into(), "1".into()))
+                .match_header("X-Api-Key", "key")
+                .with_body(r#"[{"id": 5, "hasFile": true}]"#)
+                .create_async()
+                .await;
+            let deleted = server
+                .mock("DELETE", Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+            let removed = arr(&server)
+                .remove_movie(&reqwest::Client::new(), 1)
+                .await
+                .unwrap();
+            assert_eq!(removed, Removed::Downloaded);
+            deleted.assert_async().await;
+        }
+
+        #[tokio::test]
+        async fn movie_removed() {
+            let mut server = Server::new_async().await;
+            server
+                .mock("GET", "/api/v3/movie")
+                .match_query(Matcher::Any)
+                .with_body(r#"[{"id": 5, "hasFile": false}]"#)
+                .create_async()
+                .await;
+            server
+                .mock("GET", "/api/v3/queue/details")
+                .match_query(Matcher::UrlEncoded("movieId".into(), "5".into()))
+                // Another movie's download is left alone
+                .with_body(r#"[{"id": 7, "movieId": 5}, {"id": 8, "movieId": 6}]"#)
+                .create_async()
+                .await;
+            let dequeued = server
+                .mock("DELETE", "/api/v3/queue/bulk")
+                .match_query(Matcher::AllOf(vec![
+                    Matcher::UrlEncoded("removeFromClient".into(), "true".into()),
+                    Matcher::UrlEncoded("blocklist".into(), "false".into()),
+                ]))
+                .match_body(Matcher::Json(json!({"ids": [7]})))
+                .create_async()
+                .await;
+            let deleted = server
+                .mock("DELETE", "/api/v3/movie/5")
+                .match_query(Matcher::UrlEncoded("deleteFiles".into(), "false".into()))
+                .create_async()
+                .await;
+            let removed = arr(&server)
+                .remove_movie(&reqwest::Client::new(), 1)
+                .await
+                .unwrap();
+            assert_eq!(removed, Removed::Done);
+            dequeued.assert_async().await;
+            deleted.assert_async().await;
+        }
+
+        /// Sonarr's list of the show with TVDB id 1: season 1 monitored, season 2 as given
+        fn show(monitored_2: bool) -> serde_json::Value {
+            json!([{
+                "id": 3,
+                "title": "Severance",
+                "seasons": [
+                    {"seasonNumber": 1, "monitored": true,
+                     "statistics": {"episodeFileCount": 0}},
+                    {"seasonNumber": 2, "monitored": monitored_2,
+                     "statistics": {"episodeFileCount": 0}}
+                ]
+            }])
+        }
+
+        #[tokio::test]
+        async fn downloaded_season_kept() {
+            let mut server = Server::new_async().await;
+            server
+                .mock("GET", "/api/v3/series")
+                .match_query(Matcher::Any)
+                .with_body(show(true).to_string())
+                .create_async()
+                .await;
+            server
+                .mock("GET", "/api/v3/episodefile")
+                .match_query(Matcher::UrlEncoded("seriesId".into(), "3".into()))
+                .with_body(r#"[{"seasonNumber": 2}]"#)
+                .create_async()
+                .await;
+            let changed = server
+                .mock("PUT", Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+            let removed = arr(&server)
+                .remove_seasons(&reqwest::Client::new(), 1, &[2])
+                .await
+                .unwrap();
+            assert_eq!(removed, Removed::Downloaded);
+            changed.assert_async().await;
+        }
+
+        #[tokio::test]
+        async fn season_unmonitored() {
+            let mut server = Server::new_async().await;
+            server
+                .mock("GET", "/api/v3/series")
+                .match_query(Matcher::Any)
+                .with_body(show(true).to_string())
+                .create_async()
+                .await;
+            server
+                .mock("GET", "/api/v3/episodefile")
+                .match_query(Matcher::Any)
+                // Season 1's, which isn't being removed
+                .with_body(r#"[{"seasonNumber": 1}]"#)
+                .create_async()
+                .await;
+            // Sent back whole, with only season 2 unmonitored
+            let unmonitored = server
+                .mock("PUT", "/api/v3/series/3")
+                .match_body(Matcher::Json(show(false)[0].clone()))
+                .create_async()
+                .await;
+            server
+                .mock("GET", "/api/v3/queue/details")
+                .match_query(Matcher::UrlEncoded("seriesId".into(), "3".into()))
+                .with_body(
+                    r#"[{"id": 7, "seriesId": 3, "seasonNumber": 2},
+                        {"id": 8, "seriesId": 3, "seasonNumber": 1}]"#,
+                )
+                .create_async()
+                .await;
+            let dequeued = server
+                .mock("DELETE", "/api/v3/queue/bulk")
+                .match_query(Matcher::Any)
+                .match_body(Matcher::Json(json!({"ids": [7]})))
+                .create_async()
+                .await;
+            // Season 1 is still monitored, so the show stays
+            server
+                .mock("GET", "/api/v3/series/3")
+                .with_body(show(false)[0].to_string())
+                .create_async()
+                .await;
+            let deleted = server
+                .mock("DELETE", "/api/v3/series/3")
+                .match_query(Matcher::Any)
+                .expect(0)
+                .create_async()
+                .await;
+
+            let removed = arr(&server)
+                .remove_seasons(&reqwest::Client::new(), 1, &[2])
+                .await
+                .unwrap();
+            assert_eq!(removed, Removed::Done);
+            unmonitored.assert_async().await;
+            dequeued.assert_async().await;
+            deleted.assert_async().await;
+        }
     }
 }

@@ -4,24 +4,23 @@
 //! A command's `///` doc comment and its parameters' `#[description]`s are what Discord shows in
 //! the command picker, so keep them short and user-facing.
 
-pub mod refresh_users;
-pub mod request;
-pub mod requests;
-pub mod restart;
-pub mod streams;
-pub mod tv;
+pub(crate) mod refresh_users;
+pub(crate) mod request;
+pub(crate) mod requests;
+pub(crate) mod restart;
+pub(crate) mod streams;
+pub(crate) mod tv;
 
-use anyhow::{Context as _, Result};
 use poise::{
     CreateReply,
     serenity_prelude::{Builder as _, EditInteractionResponse, UserId},
 };
 
-use crate::{BotData, BotError, Context, MediaServer, seerr::Requester};
+use crate::{Context, Data, Error, MediaServer, Result, seerr::Requester};
 
 /// Every command's check: ignores other bots, and users who haven't linked their Discord account
 /// in Seerr, who are told how to. Commands get the invoker's Seerr user from [`seerr_user`].
-async fn linked<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> Result<bool, E> {
+async fn linked<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<bool, E> {
     if ctx.author().bot {
         return Ok(false);
     }
@@ -45,7 +44,7 @@ async fn linked<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> Result<bool,
             }
             ctx.send(CreateReply::default().ephemeral(true).content(content))
                 .await
-                .map_err(anyhow::Error::from)?;
+                .map_err(Error::from)?;
         }
         return Ok(false);
     };
@@ -55,27 +54,27 @@ async fn linked<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> Result<bool,
 
 /// The invoker's Seerr user, as found by [`linked`], which only lets linked users through. Missing
 /// if poise skipped the check, which `skip_checks_for_owners` does.
-async fn seerr_user<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> Result<Requester> {
+async fn seerr_user<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<Requester> {
     ctx.invocation_data::<Requester>()
         .await
         .map(|user| *user)
-        .context("Invoker's Seerr user missing; is skip_checks_for_owners set?")
+        .ok_or(Error::Missing("Invoker's Seerr user"))
 }
 
 /// Whether the invoker is one of the configured admins, in any server or DM. Discord's
 /// Administrator permission doesn't count, since the server's admins aren't necessarily the media
 /// server's.
-fn is_admin<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> bool {
+fn is_admin<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> bool {
     is_admin_user(ctx.data().server(), ctx.author().id)
 }
 
 /// Whether `user` is one of the configured admins
-pub fn is_admin_user(data: &MediaServer, user: UserId) -> bool {
+pub(crate) fn is_admin_user(data: &MediaServer, user: UserId) -> bool {
     data.admins.contains(&user)
 }
 
 /// Backslash-escapes Discord markdown characters so titles show literally
-pub fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     s.chars()
         .fold(String::with_capacity(s.len()), |mut out, c| {
             if matches!(c, '\\' | '*' | '_' | '~' | '`' | '|') {
@@ -90,7 +89,7 @@ pub fn escape(s: &str) -> String {
 /// rest. Only an unexpired interaction token can edit an ephemeral reply, so this uses the newest
 /// press's, or the command's own if nothing was pressed. Not poise's `ReplyHandle::edit`, which
 /// always sends `embeds` and so would clear the embed, leaving a message Discord refuses as empty.
-async fn remove_buttons<U: BotData, E: BotError>(
+async fn remove_buttons<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     last: Option<String>,
 ) -> Result<()> {

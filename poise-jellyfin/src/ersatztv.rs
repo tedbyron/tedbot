@@ -2,20 +2,17 @@
 //!
 //! The XMLTV spells it `programme`; the code says program.
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use anyhow::Result;
 use chrono::{DateTime, FixedOffset, TimeZone};
+use moka::future::Cache;
 use serde::{Deserialize, Deserializer};
-use tokio::sync::Mutex;
+
+use crate::Result;
 
 /// A parsed guide. Build one with [`Guide::parse`] or [`Guide::fetch`] so `schedule` is filled in.
 #[derive(Debug, Deserialize)]
-pub struct Guide {
+pub(crate) struct Guide {
     /// In ErsatzTV's channel order
     #[serde(rename = "channel", default)]
     pub channels: Vec<Channel>,
@@ -30,7 +27,7 @@ pub struct Guide {
 
 /// A live TV channel
 #[derive(Debug, Deserialize)]
-pub struct Channel {
+pub(crate) struct Channel {
     /// Opaque id that programs refer to; not the channel number
     #[serde(rename = "@id")]
     pub id: String,
@@ -41,7 +38,7 @@ pub struct Channel {
 
 /// One airing of a movie or episode on a channel
 #[derive(Debug, Deserialize)]
-pub struct Program {
+pub(crate) struct Program {
     /// The [`Channel::id`] it airs on
     #[serde(rename = "@channel")]
     pub channel: String,
@@ -65,7 +62,7 @@ pub struct Program {
 
 /// Program artwork
 #[derive(Debug, Deserialize)]
-pub struct Icon {
+pub(crate) struct Icon {
     /// Image URL on ErsatzTV. See [`Program::poster_url`] and [`Program::jellyfin_item_id`].
     #[serde(rename = "@src")]
     pub src: String,
@@ -73,7 +70,7 @@ pub struct Icon {
 
 /// An element's text, ignoring attributes like `lang`
 #[derive(Debug, Deserialize)]
-pub struct Text {
+pub(crate) struct Text {
     /// The text content; empty for an empty element
     #[serde(rename = "$text", default)]
     pub value: String,
@@ -81,7 +78,7 @@ pub struct Text {
 
 /// An episode number in one of several formats
 #[derive(Debug, Deserialize)]
-pub struct EpisodeNum {
+pub(crate) struct EpisodeNum {
     /// `onscreen` (e.g. `S02E07`) or `xmltv_ns` (zero-based, e.g. `1.6.0/1`)
     #[serde(rename = "@system")]
     pub system: Option<String>,
@@ -98,44 +95,34 @@ fn xmltv_time<'de, D: Deserializer<'de>>(d: D) -> Result<DateTime<FixedOffset>, 
 
 /// The guide can be tens of MB with many channels, so share one copy for a short while
 #[derive(Debug)]
-pub struct GuideCache {
+pub(crate) struct GuideCache {
     http: reqwest::Client,
     url: String,
-    ttl: Duration,
-    cached: Mutex<Option<(Instant, Arc<Guide>)>>,
+    cached: Cache<(), Arc<Guide>>,
 }
 
 impl GuideCache {
     /// `url` is ErsatzTV's base URL; nothing is fetched until the first [`GuideCache::get`]
-    pub fn new(http: reqwest::Client, url: String, ttl: Duration) -> Self {
+    pub(crate) fn new(http: reqwest::Client, url: String, ttl: Duration) -> Self {
         Self {
             http,
             url,
-            ttl,
-            cached: Mutex::new(None),
+            cached: Cache::builder().time_to_live(ttl).build(),
         }
     }
 
-    /// The cached guide, refetching it if it's older than the TTL. Holds the lock while
-    /// fetching, so concurrent callers wait for one fetch instead of each starting their own.
-    /// A failed fetch isn't cached, so the next call retries.
-    pub async fn get(&self) -> Result<Arc<Guide>> {
-        let mut cached = self.cached.lock().await;
-        if let Some((fetched, guide)) = &*cached
-            && fetched.elapsed() < self.ttl
-        {
-            return Ok(Arc::clone(guide));
-        }
-        let guide = Arc::new(Guide::fetch(&self.http, &self.url).await?);
-        *cached = Some((Instant::now(), Arc::clone(&guide)));
-        drop(cached);
-        Ok(guide)
+    /// The cached guide, refetching it if it's older than the TTL. Concurrent callers wait for
+    /// one fetch instead of each starting their own. A failed fetch isn't cached, so the next
+    /// call retries.
+    pub(crate) async fn get(&self) -> Result<Arc<Guide>> {
+        let fetch = async { Guide::fetch(&self.http, &self.url).await.map(Arc::new) };
+        Ok(self.cached.try_get_with((), fetch).await?)
     }
 }
 
 impl Guide {
     /// Parses an XMLTV document (a leading byte order mark is fine) and indexes it by channel
-    pub fn parse(xml: &str) -> Result<Self> {
+    pub(crate) fn parse(xml: &str) -> Result<Self> {
         let mut guide: Self = quick_xml::de::from_str(xml.trim_start_matches('\u{feff}'))?;
         for (i, p) in guide.programs.iter().enumerate() {
             guide.schedule.entry(p.channel.clone()).or_default().push(i);
@@ -149,7 +136,7 @@ impl Guide {
 
     /// Downloads and parses the guide from ErsatzTV at `base_url`. Use [`GuideCache`] instead
     /// of calling this per request.
-    pub async fn fetch(http: &reqwest::Client, base_url: &str) -> Result<Self> {
+    pub(crate) async fn fetch(http: &reqwest::Client, base_url: &str) -> Result<Self> {
         let xml = http
             .get(format!("{}/iptv/xmltv.xml", base_url.trim_end_matches('/')))
             .send()
@@ -162,7 +149,7 @@ impl Guide {
 
     /// Downloads an image, e.g. from [`Program::poster_url`], to attach to a message. Discord
     /// can't load the URL itself because ErsatzTV is only reachable on localhost.
-    pub async fn fetch_image(http: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
+    pub(crate) async fn fetch_image(http: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
         Ok(http
             .get(url)
             .send()
@@ -175,7 +162,7 @@ impl Guide {
 
     /// The program airing on `channel` at `at`, and the one after it. In a gap between
     /// programs, the first is `None` and the second is the next to start.
-    pub fn on_at<Tz: TimeZone>(
+    pub(crate) fn on_at<Tz: TimeZone>(
         &self,
         channel: &Channel,
         at: &DateTime<Tz>,
@@ -193,7 +180,7 @@ impl Guide {
 
     /// Index of the channel matching `query`: its number, then a whole name, then part of one.
     /// Case-insensitive; `None` for an empty query.
-    pub fn find(&self, query: &str) -> Option<usize> {
+    pub(crate) fn find(&self, query: &str) -> Option<usize> {
         let query = query.trim().to_lowercase();
         if query.is_empty() {
             return None;
@@ -216,7 +203,7 @@ impl Guide {
 
     /// Up to `limit` channels whose number starts with `query` or whose title contains it,
     /// number matches first. An empty query matches every channel. Used for autocomplete.
-    pub fn search(&self, query: &str, limit: usize) -> Vec<&Channel> {
+    pub(crate) fn search(&self, query: &str, limit: usize) -> Vec<&Channel> {
         let query = query.trim().to_lowercase();
         let by_number = |c: &Channel| c.number().is_some_and(|n| n.starts_with(&query));
         let mut matches: Vec<&Channel> = self
@@ -232,17 +219,17 @@ impl Guide {
 
 impl Channel {
     /// The first display name ("1 Movies"), or the id if there are none
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         self.display_names.first().map_or(&self.id, String::as_str)
     }
 
     /// The channel number ("1"), if ErsatzTV listed one
-    pub fn number(&self) -> Option<&str> {
+    pub(crate) fn number(&self) -> Option<&str> {
         self.display_names.get(1).map(String::as_str)
     }
 
     /// "1: Movies" from ErsatzTV's display names ("1 Movies", "1", "Movies")
-    pub fn title(&self) -> String {
+    pub(crate) fn title(&self) -> String {
         match self.display_names.as_slice() {
             [_, number, name, ..] => format!("{number}: {name}"),
             _ => self.name().to_owned(),
@@ -252,7 +239,7 @@ impl Channel {
 
 impl Program {
     /// "S02 E07" from the onscreen episode number, or `None` for movies
-    pub fn episode(&self) -> Option<String> {
+    pub(crate) fn episode(&self) -> Option<String> {
         let ep = self
             .episode_nums
             .iter()
@@ -265,14 +252,14 @@ impl Program {
 
     /// The Jellyfin item id from the poster URL (`.../jellyfin/Items/<id>/...`), for looking up
     /// details the guide doesn't have
-    pub fn jellyfin_item_id(&self) -> Option<&str> {
+    pub(crate) fn jellyfin_item_id(&self) -> Option<&str> {
         let (_, rest) = self.icon.as_ref()?.src.split_once("/jellyfin/Items/")?;
         rest.split('/').next().filter(|id| !id.is_empty())
     }
 
     /// The poster URL resized to `height` pixels, so we don't download full-size artwork for a
     /// thumbnail
-    pub fn poster_url(&self, height: u32) -> Option<String> {
+    pub(crate) fn poster_url(&self, height: u32) -> Option<String> {
         let mut url = reqwest::Url::parse(&self.icon.as_ref()?.src).ok()?;
         let query: Vec<(String, String)> = url
             .query_pairs()

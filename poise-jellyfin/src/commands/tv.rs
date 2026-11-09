@@ -6,7 +6,6 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
 use poise::{
     CreateReply, command,
@@ -23,7 +22,8 @@ use tracing::warn;
 
 use super::{escape, remove_buttons};
 use crate::{
-    BotData, BotError, Context, MediaServer,
+    Context, Data, Error, MediaServer, Result,
+    error::chain,
     ersatztv::{Guide, Program},
 };
 
@@ -42,7 +42,7 @@ const PAGE_SIZE: usize = 12;
 
 /// What's on live TV right now
 #[command(check = "super::linked", slash_command, ephemeral)]
-pub async fn tv<U: BotData, E: BotError>(
+pub(crate) async fn tv<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     #[description = "Channel number or name"]
     #[autocomplete = "autocomplete_channel"]
@@ -51,8 +51,8 @@ pub async fn tv<U: BotData, E: BotError>(
     tv_run(ctx, channel).await.map_err(E::from)
 }
 
-/// [`tv()`], failing with [`anyhow::Error`]
-async fn tv_run<U: BotData, E: BotError>(
+/// [`tv()`], failing with [`Error`](crate::Error)
+async fn tv_run<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     channel: Option<String>,
 ) -> Result<()> {
@@ -67,7 +67,7 @@ async fn tv_run<U: BotData, E: BotError>(
 /// Suggests up to 25 channels (Discord's limit) by title, filling in the channel number so
 /// [`crate::ersatztv::Guide::find`] matches it exactly. An unreachable guide gives no suggestions
 /// rather than an error.
-async fn autocomplete_channel<U: BotData, E: BotError>(
+async fn autocomplete_channel<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     partial: &str,
 ) -> CreateAutocompleteResponse {
@@ -82,7 +82,7 @@ async fn autocomplete_channel<U: BotData, E: BotError>(
             })
             .collect(),
         Err(e) => {
-            warn!("Fetching guide for autocomplete: {e:#}");
+            warn!("Fetching guide for autocomplete: {}", chain(&e));
             Vec::new()
         }
     };
@@ -112,7 +112,7 @@ enum Target {
 ///
 /// Only presses on this reply are collected. Button and modal ids are prefixed with the
 /// invocation id so concurrent invocations' modals don't collide.
-async fn navigate<U: BotData, E: BotError>(
+async fn navigate<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     mode: Mode,
     query: Option<String>,
@@ -202,7 +202,7 @@ async fn navigate<U: BotData, E: BotError>(
                 Target::Index(_) => break,
             },
             Err(e) => {
-                warn!("Updating live TV: {e:#}");
+                warn!("Updating live TV: {}", chain(&e));
                 "Couldn't load the TV guide, try again in a bit \u{1fae4}".to_owned()
             }
         };
@@ -301,7 +301,7 @@ impl Screen {
                             embed = embed.thumbnail(format!("attachment://{POSTER}"));
                             poster = Some(CreateAttachment::bytes(bytes, POSTER));
                         }
-                        Err(e) => warn!("Fetching poster {url}: {e:#}"),
+                        Err(e) => warn!("Fetching poster {url}: {}", chain(&e)),
                     }
                 }
 
@@ -463,7 +463,7 @@ async fn director(data: &MediaServer, p: &Program) -> Option<String> {
     match data.jellyfin.directors(&data.http, id).await {
         Ok(directors) => directors.first().map(|name| surname(name)),
         Err(e) => {
-            warn!("Fetching directors for {id}: {e:#}");
+            warn!("Fetching directors for {id}: {}", chain(&e));
             None
         }
     }

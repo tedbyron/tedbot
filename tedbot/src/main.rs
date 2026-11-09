@@ -3,8 +3,6 @@
 //! Reads its config (see `config.example.toml`), registers [`poise_jellyfin`]'s slash commands
 //! globally, and runs until the gateway connection fails.
 
-#![warn(clippy::all, clippy::nursery, rust_2018_idioms)]
-
 use std::{env, fs, process, time::Duration};
 
 use anyhow::{Context as _, Error, Result};
@@ -14,7 +12,8 @@ use poise::{
     serenity_prelude::{self as serenity, ActivityData, GatewayIntents, Permissions},
 };
 use poise_jellyfin::{MediaServer, RestartBot};
-use tracing::{Level, error, info, warn};
+use tracing::{error, info, warn};
+use tracing_subscriber::EnvFilter;
 
 mod config;
 
@@ -52,11 +51,10 @@ async fn run() -> Result<()> {
     .with_context(|| format!("parsing {path}"))?;
     tracing_subscriber::fmt()
         .with_target(false)
-        .with_max_level(
-            cfg.log_level
-                .as_deref()
-                .and_then(|lvl| lvl.parse().ok())
-                .unwrap_or(Level::WARN),
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(cfg.log_level.into())
+                .from_env_lossy(),
         )
         .init();
 

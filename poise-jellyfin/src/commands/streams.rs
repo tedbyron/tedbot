@@ -6,7 +6,6 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use anyhow::Result;
 use poise::{
     CreateReply, command,
     serenity_prelude::{
@@ -20,7 +19,8 @@ use tracing::warn;
 
 use super::{escape, is_admin, remove_buttons};
 use crate::{
-    BotData, BotError, Context,
+    Context, Data, Error, Result,
+    error::chain,
     jellyfin::{self, Session},
     seerr,
 };
@@ -34,12 +34,12 @@ const MAX_FIELDS: usize = 25;
 
 /// Who's streaming from the Jellyfin server
 #[command(check = "super::linked", slash_command, ephemeral)]
-pub async fn streams<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> Result<(), E> {
+pub(crate) async fn streams<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<(), E> {
     streams_run(ctx).await.map_err(E::from)
 }
 
-/// [`streams()`], failing with [`anyhow::Error`]
-async fn streams_run<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> Result<()> {
+/// [`streams()`], failing with [`Error`](crate::Error)
+async fn streams_run<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<()> {
     ctx.defer_ephemeral().await?;
 
     let admin = is_admin(ctx);
@@ -73,7 +73,7 @@ async fn streams_run<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> Result<
                     .await?;
             }
             Err(e) => {
-                warn!("Refreshing sessions: {e:#}");
+                warn!("Refreshing sessions: {}", chain(&e));
                 CreateInteractionResponseFollowup::new()
                     .content("Couldn't reach Jellyfin, try again in a bit \u{1fae4}")
                     .ephemeral(true)
@@ -90,7 +90,7 @@ async fn streams_run<U: BotData, E: BotError>(ctx: Context<'_, U, E>) -> Result<
 
 /// The stream count, upload in use, and who's watching. For admins, also LAN bandwidth and one
 /// field per stream, sorted by user.
-async fn embed<U: BotData, E: BotError>(
+async fn embed<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     admin: bool,
 ) -> Result<CreateEmbed> {
@@ -137,7 +137,7 @@ async fn embed<U: BotData, E: BotError>(
 
 /// How to show each session's user: a mention if they linked a Discord account in Seerr and are
 /// in this server, else their Jellyfin name. A mention in an embed never pings.
-async fn users<U: BotData, E: BotError>(
+async fn users<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     sessions: &[Session],
 ) -> Vec<String> {
@@ -151,7 +151,7 @@ async fn users<U: BotData, E: BotError>(
             .seerr
             .discord_ids(&data.http, &jellyfin_ids)
             .await
-            .inspect_err(|e| warn!("Fetching Discord ids from Seerr: {e:#}"))
+            .inspect_err(|e| warn!("Fetching Discord ids from Seerr: {}", chain(&e)))
             .unwrap_or_default(),
         None => HashMap::new(),
     };

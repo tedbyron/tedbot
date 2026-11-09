@@ -4,7 +4,7 @@
 //! posts new and available requests in Discord.
 //!
 //! The bot's data (poise's `U`) holds a [`MediaServer`] and implements `AsRef<MediaServer>`
-//! (`MediaServer` itself already does), and its error (`E`) converts from [`anyhow::Error`]:
+//! (`MediaServer` itself already does), and its error (`E`) converts from [`Error`]:
 //!
 //! ```ignore
 //! // Shut down for the service manager to start the bot again; `None` can't restart
@@ -27,12 +27,11 @@
 //! settings; anyone else is told how to link. That's a check, so `skip_checks_for_owners` isn't
 //! supported: [`handle_event`] fails on `Ready` if it's set.
 
-#![warn(clippy::all, clippy::nursery, rust_2018_idioms)]
-
 mod announce;
 mod arr;
 mod commands;
 mod config;
+mod error;
 mod ersatztv;
 mod jellyfin;
 mod seerr;
@@ -40,7 +39,6 @@ mod webhook;
 
 use std::{fmt, ops::Deref, sync::Arc, time::Duration};
 
-use anyhow::{Result, anyhow, ensure};
 use futures::future::BoxFuture;
 use poise::serenity_prelude::{self as serenity, ShardManager, UserId};
 
@@ -48,6 +46,7 @@ pub use config::{
     Config, ErsatzTvConfig, JellyfinConfig, Radarr4kConfig, RadarrConfig, SeerrConfig,
     Sonarr4kConfig, SonarrConfig, WebhookConfig,
 };
+pub use error::{Error, Result};
 pub use webhook::Listener;
 
 /// The media server's services and what's been looked up from them. Clones share it, so give one
@@ -100,18 +99,20 @@ impl MediaServer {
         http: reqwest::Client,
         restart_bot: Option<RestartBot>,
     ) -> Result<Self> {
-        ensure!(
-            !cfg.jellyfin.api_key.is_empty(),
-            "jellyfin.api_key is empty"
-        );
-        ensure!(!cfg.seerr.api_key.is_empty(), "seerr.api_key is empty");
-        ensure!(
-            cfg.jellyfin
-                .restart_command
-                .as_ref()
-                .is_none_or(|c| !c.is_empty()),
-            "jellyfin.restart_command is empty"
-        );
+        if cfg.jellyfin.api_key.is_empty() {
+            return Err(Error::Config("jellyfin.api_key is empty"));
+        }
+        if cfg.seerr.api_key.is_empty() {
+            return Err(Error::Config("seerr.api_key is empty"));
+        }
+        if cfg
+            .jellyfin
+            .restart_command
+            .as_ref()
+            .is_some_and(Vec::is_empty)
+        {
+            return Err(Error::Config("jellyfin.restart_command is empty"));
+        }
         let arr = |url: &String, api_key: &String| arr::Arr {
             url: url.clone(),
             api_key: api_key.clone(),
@@ -185,24 +186,19 @@ impl AsRef<Self> for MediaServer {
 }
 
 /// The bot's data (poise's `U`): anything that holds a [`MediaServer`]
-pub trait BotData: AsRef<MediaServer> + Send + Sync + 'static {
+pub trait Data: AsRef<MediaServer> + Send + Sync + 'static {
     /// The media server
     fn server(&self) -> &MediaServer {
         self.as_ref()
     }
 }
 
-impl<T: AsRef<MediaServer> + Send + Sync + 'static> BotData for T {}
-
-/// The bot's error (poise's `E`): anything an [`anyhow::Error`] converts to
-pub trait BotError: From<anyhow::Error> + Send + Sync + 'static {}
-
-impl<T: From<anyhow::Error> + Send + Sync + 'static> BotError for T {}
+impl<T: AsRef<MediaServer> + Send + Sync + 'static> Data for T {}
 
 type Context<'a, U, E> = poise::Context<'a, U, E>;
 
 /// Every command, for `FrameworkOptions::commands`
-pub fn commands<U: BotData, E: BotError>() -> Vec<poise::Command<U, E>> {
+pub fn commands<U: Data, E: From<Error> + Send + Sync + 'static>() -> Vec<poise::Command<U, E>> {
     vec![
         commands::refresh_users::refresh_users(),
         commands::request::request(),
@@ -218,16 +214,13 @@ pub fn commands<U: BotData, E: BotError>() -> Vec<poise::Command<U, E>> {
 ///
 /// Fails on `Ready` if `skip_checks_for_owners` is set, since owners would skip the Seerr link
 /// check the commands rely on.
-pub async fn handle_event<U: BotData, E: BotError>(
+pub async fn handle_event<U: Data, E: From<Error>>(
     framework: poise::FrameworkContext<'_, U, E>,
     event: &serenity::FullEvent,
 ) -> Result<(), E> {
     match event {
         serenity::FullEvent::Ready { .. } if framework.options.skip_checks_for_owners => {
-            return Err(anyhow!(
-                "skip_checks_for_owners isn't supported: owners would skip the Seerr link check"
-            )
-            .into());
+            return Err(Error::SkipChecksForOwners.into());
         }
         serenity::FullEvent::InteractionCreate {
             interaction: serenity::Interaction::Component(press),

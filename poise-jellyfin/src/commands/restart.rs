@@ -8,7 +8,6 @@
 
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result, ensure};
 use poise::{
     ChoiceParameter, CreateReply, command,
     serenity_prelude::{
@@ -20,7 +19,7 @@ use tokio::{process::Command, time::sleep};
 use tracing::{error, info, warn};
 
 use super::{is_admin, remove_buttons};
-use crate::{BotData, BotError, Context, MediaServer};
+use crate::{Context, Data, Error, MediaServer, Result, error::chain};
 
 /// How long the confirmation's buttons work
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(60);
@@ -31,7 +30,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// What `/restart` can restart
 #[derive(Clone, Copy, Debug, ChoiceParameter)]
-pub enum Service {
+pub(crate) enum Service {
     #[name = "Jellyfin"]
     Jellyfin,
     #[name = "This bot"]
@@ -49,7 +48,7 @@ impl Service {
                     n => format!("This stops the {n} streams playing."),
                 },
                 Err(e) => {
-                    warn!("Fetching sessions: {e:#}");
+                    warn!("Fetching sessions: {}", chain(&e));
                     "Jellyfin isn't answering, so streams can't be counted.".to_owned()
                 }
             },
@@ -69,15 +68,15 @@ impl Service {
     guild_only,
     default_member_permissions = "ADMINISTRATOR"
 )]
-pub async fn restart<U: BotData, E: BotError>(
+pub(crate) async fn restart<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     #[description = "Service to restart"] service: Service,
 ) -> Result<(), E> {
     restart_run(ctx, service).await.map_err(E::from)
 }
 
-/// [`restart()`], failing with [`anyhow::Error`]
-async fn restart_run<U: BotData, E: BotError>(
+/// [`restart()`], failing with [`Error`](crate::Error)
+async fn restart_run<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     service: Service,
 ) -> Result<()> {
@@ -141,10 +140,10 @@ async fn restart_run<U: BotData, E: BotError>(
     let started = Instant::now();
     let restarted = match &data.jellyfin_restart {
         Some(command) => run(command).await,
-        None => data.jellyfin.restart(&data.http).await.map_err(Into::into),
+        None => data.jellyfin.restart(&data.http).await.map_err(Error::from),
     };
     let content = if let Err(e) = restarted {
-        error!("Restarting {name}: {e:#}");
+        error!("Restarting {name}: {}", chain(&e));
         format!("Couldn't restart {name} \u{1fae4}")
     } else {
         info!("{} restarted {name}", ctx.author().name);
@@ -168,13 +167,22 @@ async fn restart_run<U: BotData, E: BotError>(
 
 /// Runs `command` (program, then arguments), failing if it does
 async fn run(command: &[String]) -> Result<()> {
-    let (program, args) = command.split_first().context("Empty restart command")?;
-    let out = Command::new(program).args(args).output().await?;
-    ensure!(
-        out.status.success(),
-        "{}: {}",
-        command.join(" "),
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
+    let (program, args) = command
+        .split_first()
+        .ok_or(Error::Config("jellyfin.restart_command is empty"))?;
+    let out = Command::new(program)
+        .args(args)
+        .output()
+        .await
+        .map_err(|source| Error::Spawn {
+            command: command.join(" "),
+            source,
+        })?;
+    if !out.status.success() {
+        return Err(Error::Command {
+            command: command.join(" "),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        });
+    }
     Ok(())
 }

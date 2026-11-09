@@ -1,4 +1,4 @@
-# Log level: error, warn (default), info, debug or trace
+# Log level: off, error, warn (default), info, debug or trace. RUST_LOG overrides it.
 # log_level = 'info'
 
 [discord]

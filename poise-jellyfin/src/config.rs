@@ -140,6 +140,7 @@ fn default_sonarr_4k_url() -> String {
 /// Listener for Seerr's webhook, on localhost
 #[derive(Debug, Deserialize)]
 pub struct WebhookConfig {
+    /// Port to listen on
     pub port: u16,
     /// URLs to pass every notification on to, since Seerr only has one webhook. One URL or a list.
     #[serde(default, deserialize_with = "one_or_many")]

@@ -10,7 +10,7 @@ const TICKS_PER_SECOND: u64 = 10_000_000;
 
 /// Where to reach Jellyfin and how to authenticate. The HTTP client is passed in per call so the
 /// bot shares one connection pool.
-pub struct Jellyfin {
+pub(crate) struct Jellyfin {
     pub url: String,
     pub api_key: String,
 }
@@ -54,7 +54,7 @@ struct Person {
 /// A connected client, from `GET /Sessions`
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct Session {
+pub(crate) struct Session {
     /// Signed-in user's id, if any
     pub user_id: Option<String>,
     /// Signed-in user's name, if any
@@ -77,7 +77,7 @@ pub struct Session {
 /// The item a session is playing
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct NowPlaying {
+pub(crate) struct NowPlaying {
     /// Movie or episode title
     pub name: String,
     /// `Movie`, `Episode`, `Audio`, `TvChannel`, ...
@@ -100,7 +100,7 @@ pub struct NowPlaying {
 /// One track of the source file
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct MediaStream {
+pub(crate) struct MediaStream {
     /// `Video`, `Audio`, `Subtitle`, ...
     pub r#type: Option<String>,
     /// Track index that [`PlayState::audio_stream_index`] refers to
@@ -115,7 +115,7 @@ pub struct MediaStream {
 /// Where playback is and how it's delivered
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct PlayState {
+pub(crate) struct PlayState {
     /// Position in ticks (100 ns)
     pub position_ticks: Option<u64>,
     /// Whether playback is paused
@@ -130,7 +130,7 @@ pub struct PlayState {
 /// What a transcode is doing
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct TranscodingInfo {
+pub(crate) struct TranscodingInfo {
     /// Output bits per second
     pub bitrate: Option<u64>,
     /// Whether video is copied rather than re-encoded
@@ -153,7 +153,11 @@ impl Jellyfin {
 
     /// Directors credited on the item, in Jellyfin's order. Empty if there are none or the item
     /// doesn't exist.
-    pub async fn directors(&self, http: &reqwest::Client, item_id: &str) -> Result<Vec<String>> {
+    pub(crate) async fn directors(
+        &self,
+        http: &reqwest::Client,
+        item_id: &str,
+    ) -> Result<Vec<String>> {
         let items: Items = self
             .get(http, "/Items")
             .query(&[("ids", item_id), ("fields", "People")])
@@ -172,7 +176,7 @@ impl Jellyfin {
     }
 
     /// Whether Jellyfin's health check passes within 5 seconds
-    pub async fn healthy(&self, http: &reqwest::Client) -> bool {
+    pub(crate) async fn healthy(&self, http: &reqwest::Client) -> bool {
         http.get(format!("{}/health", self.url.trim_end_matches('/')))
             .timeout(Duration::from_secs(5))
             .send()
@@ -181,7 +185,7 @@ impl Jellyfin {
     }
 
     /// Asks Jellyfin to restart itself. Needs an API key, which counts as an admin.
-    pub async fn restart(&self, http: &reqwest::Client) -> Result<()> {
+    pub(crate) async fn restart(&self, http: &reqwest::Client) -> Result<()> {
         http.post(format!("{}/System/Restart", self.url.trim_end_matches('/')))
             .header(
                 "Authorization",
@@ -194,7 +198,7 @@ impl Jellyfin {
     }
 
     /// Sessions that are playing something, in Jellyfin's order
-    pub async fn playing(&self, http: &reqwest::Client) -> Result<Vec<Session>> {
+    pub(crate) async fn playing(&self, http: &reqwest::Client) -> Result<Vec<Session>> {
         let sessions: Vec<Session> = self
             .get(http, "/Sessions")
             .send()
@@ -212,7 +216,7 @@ impl Jellyfin {
 impl Session {
     /// Bits per second sent to the client: the transcode's output, or else the source's video
     /// plus the audio track playing. `None` if Jellyfin reports no bitrates.
-    pub fn bitrate(&self) -> Option<u64> {
+    pub(crate) fn bitrate(&self) -> Option<u64> {
         if let Some(bitrate) = self.transcoding_info.as_ref().and_then(|t| t.bitrate) {
             return Some(bitrate);
         }
@@ -237,7 +241,7 @@ impl Session {
     }
 
     /// Whether the client is on the LAN (or this machine), so it doesn't use upload bandwidth
-    pub fn is_local(&self) -> bool {
+    pub(crate) fn is_local(&self) -> bool {
         self.remote_end_point
             .as_deref()
             .and_then(|ip| ip.parse::<IpAddr>().ok())
@@ -251,7 +255,7 @@ impl Session {
 }
 
 /// Converts Jellyfin ticks to whole seconds
-pub const fn seconds(ticks: u64) -> u64 {
+pub(crate) const fn seconds(ticks: u64) -> u64 {
     ticks / TICKS_PER_SECOND
 }
 
