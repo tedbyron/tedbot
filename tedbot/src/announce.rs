@@ -14,7 +14,7 @@ use crate::{
     Data,
     commands::{
         escape,
-        request::{ranges, truncate},
+        request::{check_partial, ranges, truncate},
         requests::post_card,
     },
     seerr::{self, Request, RequestStatus, Status},
@@ -136,7 +136,8 @@ async fn available(
     let media = request
         .media()
         .context("request isn't for a movie or show")?;
-    let details = data.seerr.details(&data.http, media).await?;
+    let mut details = data.seerr.details(&data.http, media).await?;
+    check_partial(data, &mut details, media, request.is_4k).await;
     if details.request_status(request) != Status::Available {
         return Ok(None);
     }
@@ -153,8 +154,14 @@ async fn available(
     if let Some(path) = &details.poster_path {
         embed = embed.thumbnail(format!("{POSTER_URL}{path}"));
     }
-    if !request.seasons.is_empty() {
-        embed = embed.field("Seasons", ranges(&request.season_numbers()), true);
+    let mut seasons: Vec<u32> = request
+        .season_numbers()
+        .into_iter()
+        .filter(|&n| details.season_status_of(n, request.is_4k) == Status::Available)
+        .collect();
+    seasons.sort_unstable();
+    if !seasons.is_empty() {
+        embed = embed.field("Seasons", ranges(&seasons), true);
     }
     let info = details.media_info.as_ref();
     let jellyfin = info.and_then(|m| m.jellyfin_url(request.is_4k).map(str::to_owned));

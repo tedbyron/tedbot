@@ -712,7 +712,7 @@ async fn downloads_if(
 /// downloaded if Sonarr has a file for every monitored episode. Seerr counts a season's episodes
 /// by TMDB, which can split them differently from TVDB, which Sonarr goes by. Best effort, like
 /// [`downloads_if`].
-pub(super) async fn check_partial(data: &Data, details: &mut Details, media: Media, is_4k: bool) {
+pub async fn check_partial(data: &Data, details: &mut Details, media: Media, is_4k: bool) {
     let Some(info) = &details.media_info else {
         return;
     };

@@ -77,9 +77,10 @@ store):
   shares it.
 - **Available channel** (done): "now available" posts in each of
   `seerr.webhook.available_channels` when Seerr's webhook sends
-  `MEDIA_AVAILABLE`: poster, title, overview, seasons and requester, with
-  Jellyfin, Moonfin Web (`jellyfin.moonfin`) and Seerr link buttons. Only posted
-  if the request's movie or seasons are available, and once per request per run.
+  `MEDIA_AVAILABLE`: poster, title, overview, the requested seasons that are
+  available, and requester, with Jellyfin, Moonfin Web (`jellyfin.moonfin`) and
+  Seerr link buttons. Only posted if the request's movie or seasons are
+  available, and once per request per run.
 - 4K requests (dotfiles' `radarr-4k`/`sonarr-4k`, Seerr's default 4K servers)
   are read from Seerr's `status4k`, `mediaUrl4k` and `jellyfinMediaId4k`, and
   marked "(4K)". Cancelling one takes it out of the 4K Radarr or Sonarr
