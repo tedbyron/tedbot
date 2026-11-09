@@ -77,6 +77,17 @@
             }
           );
           test = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
+          # Advisories need the network; run `cargo deny check` in the dev shell for them
+          deny = craneLib.cargoDeny (
+            commonArgs
+            // {
+              src = lib.cleanSourceWith {
+                src = ./.;
+                filter = path: type: craneLib.filterCargoSources path type || baseNameOf path == "deny.toml";
+              };
+              cargoDenyChecks = "bans licenses sources";
+            }
+          );
         };
         formatter = treefmt.wrapper;
 
@@ -84,6 +95,7 @@
           packages = [
             rust
             bacon
+            cargo-deny
           ];
         };
 

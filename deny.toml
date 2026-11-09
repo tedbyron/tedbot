@@ -1,0 +1,45 @@
+# cargo-deny: `nix flake check` runs every check but advisories, which needs the network.
+# Run `cargo deny check` in the dev shell for those too.
+
+[graph]
+all-features = false
+
+[advisories]
+# rustls 0.22 and its rustls-webpki 0.102, which serenity 0.12 uses only for the Discord gateway
+# connection. Remove these when serenity moves to a newer rustls.
+ignore = [
+  { id = "RUSTSEC-2026-0346", reason = "rustls 0.22 in serenity 0.12's gateway connection" },
+  { id = "RUSTSEC-2026-0349", reason = "rustls 0.22 in serenity 0.12's gateway connection" },
+  { id = "RUSTSEC-2026-0049", reason = "rustls-webpki 0.102 in serenity 0.12's gateway connection" },
+  { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.102 in serenity 0.12's gateway connection" },
+  { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.102 in serenity 0.12's gateway connection" },
+  { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.102 in serenity 0.12's gateway connection" },
+  { id = "RUSTSEC-2026-0382", reason = "rustls-webpki 0.102 in serenity 0.12's gateway connection" },
+]
+
+[licenses]
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+
+[bans]
+# serenity 0.12 and poise 0.7 pin older reqwest, rustls, syn, etc., which can't go until they
+# update
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
