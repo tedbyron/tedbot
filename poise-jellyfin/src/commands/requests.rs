@@ -881,6 +881,20 @@ impl Screen {
                 },
             );
             embed = embed.field("Quality", quality, true);
+            // Bold, since it's unusual: only shown when it isn't where the server puts it by
+            // default, or anime by default
+            let default = profiles.and_then(|p| {
+                details
+                    .is_anime()
+                    .then_some(p.anime_folder.as_ref())
+                    .flatten()
+                    .or(p.folder.as_ref())
+            });
+            if let Some(folder) = &request.root_folder
+                && default != Some(folder)
+            {
+                embed = embed.field("Root folder", format!("**{}**", escape(folder)), false);
+            }
         }
         if total > 1 {
             embed = embed.footer(CreateEmbedFooter::new(format!("{} of {total}", index + 1)));

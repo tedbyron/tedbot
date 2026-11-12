@@ -182,21 +182,27 @@ store):
   back as they were). Pending cards also get "Approve all N" when the same
   requester has other pending requests each made within an hour of the one
   before; it asks to confirm with the titles listed, then approves them one at a
-  time and lists any that failed. Quality is only editable when the request goes
-  to the default server, whose profiles are the ones the bot knows. Those
-  profiles (`requests::profiles`) are kept for 10 minutes, and only fetched once
-  a card needs them. Seerr is asked as its admin, so the bot checks `is_admin`
-  itself. Request lists carry no titles, so each row's details are fetched;
-  Seerr gets them from TMDB, which can take its whole timeout. A row waits at
-  most 3s (`LIST_WAIT`), then shows its title from `Seerr::titles` (kept from
-  every details lookup, least recently used dropped past 2000) and "Loading…"
-  for an approved status. Those are fetched again in the background with the
-  usual timeout and the list rebuilt if any arrive. Opening a card from the list
-  works the same way: past 3s it shows what the request itself says with only ◀
-  🔄 ▶ and All requests until its details arrive. What the background lookup
-  gets, failures included, goes to the next build (`Viewer::arrived`) so nothing
-  is asked twice or left loading. One collector stream serves the whole command,
-  so presses made mid-rebuild wait. Request posts still wait for them.
+  time and lists any that failed. Admins also see the request's root folder, in
+  bold, when it's not its server's default (Seerr leaves it null unless the
+  requester has Advanced Requests, and then usually fills in the default). For
+  anime (TMDB's anime keyword, as Seerr checks) the default is Sonarr's anime
+  folder in Seerr, or for Radarr, which Seerr has none for, its root folder with
+  "anime" in the name (`anime-movies`). Quality is only editable when the
+  request goes to the default server, whose profiles are the ones the bot knows.
+  Those profiles (`requests::profiles`) are kept for 10 minutes, and only
+  fetched once a card needs them. Seerr is asked as its admin, so the bot checks
+  `is_admin` itself. Request lists carry no titles, so each row's details are
+  fetched; Seerr gets them from TMDB, which can take its whole timeout. A row
+  waits at most 3s (`LIST_WAIT`), then shows its title from `Seerr::titles`
+  (kept from every details lookup, least recently used dropped past 2000) and
+  "Loading…" for an approved status. Those are fetched again in the background
+  with the usual timeout and the list rebuilt if any arrive. Opening a card from
+  the list works the same way: past 3s it shows what the request itself says
+  with only ◀ 🔄 ▶ and All requests until its details arrive. What the
+  background lookup gets, failures included, goes to the next build
+  (`Viewer::arrived`) so nothing is asked twice or left loading. One collector
+  stream serves the whole command, so presses made mid-rebuild wait. Request
+  posts still wait for them.
 - **`/streams`** (done): ephemeral, since views differ. Everyone gets the stream
   count, upload in use and who's watching. Admins also get what each stream is
   playing, direct play or transcode, and LAN bitrate. Bitrates count unpaused

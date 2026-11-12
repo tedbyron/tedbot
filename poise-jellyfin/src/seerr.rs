@@ -191,12 +191,25 @@ struct Server {
     id: u32,
     is_4k: bool,
     is_default: bool,
+    /// Default root folder
+    active_directory: Option<String>,
+    /// Default root folder for anime, Sonarr only
+    active_anime_directory: Option<String>,
 }
 
 /// Response of `GET /api/v1/service/{radarr,sonarr}/{id}`
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ServerDetails {
     profiles: Vec<Profile>,
+    #[serde(default)]
+    root_folders: Vec<RootFolder>,
+}
+
+/// A Radarr or Sonarr root folder
+#[derive(Debug, Deserialize)]
+struct RootFolder {
+    path: String,
 }
 
 /// A quality profile
@@ -216,6 +229,11 @@ pub struct Profiles {
     /// Whether it's a 4K server
     pub is_4k: bool,
     pub list: Vec<Profile>,
+    /// The server's default root folder
+    pub folder: Option<String>,
+    /// Where anime goes: Sonarr's anime folder in Seerr, else (Seerr has none for Radarr) the
+    /// server's root folder with "anime" in its name, if any
+    pub anime_folder: Option<String>,
 }
 
 impl Profiles {
@@ -369,7 +387,19 @@ pub struct Details {
     seasons: Vec<Season>,
     /// What Seerr knows, absent if it's never been requested or seen in Jellyfin
     pub media_info: Option<MediaInfo>,
+    /// TMDB's keywords
+    #[serde(default)]
+    keywords: Vec<Keyword>,
 }
+
+/// A TMDB keyword
+#[derive(Debug, Deserialize)]
+struct Keyword {
+    id: u32,
+}
+
+/// TMDB's "anime" keyword, which Seerr sends shows with to Sonarr's anime folder
+const ANIME_KEYWORD: u32 = 210_024;
 
 /// A season as TMDB lists it
 #[derive(Debug, Deserialize)]
@@ -437,7 +467,9 @@ pub struct Request {
     pub server_id: Option<u32>,
     /// Quality profile, `None` for the server's default
     pub profile_id: Option<u32>,
-    root_folder: Option<String>,
+    /// Where it's downloaded to, `None` for the server's default. Seerr fills it in, often with
+    /// the default, when the requester has Advanced Requests.
+    pub root_folder: Option<String>,
     /// Sonarr only
     language_profile_id: Option<u32>,
     tags: Option<Vec<u32>>,
@@ -592,6 +624,11 @@ impl MediaInfo {
 }
 
 impl Details {
+    /// Whether TMDB calls it anime
+    pub fn is_anime(&self) -> bool {
+        self.keywords.iter().any(|k| k.id == ANIME_KEYWORD)
+    }
+
     /// Where the movie, or the whole show, stands
     pub fn status(&self) -> Status {
         self.status_of(false)
@@ -969,6 +1006,18 @@ impl Seerr {
             movies: matches!(media, Media::Movie(_)),
             is_4k,
             list: details.profiles,
+            folder: server.active_directory.clone(),
+            anime_folder: server.active_anime_directory.clone().or_else(|| {
+                details
+                    .root_folders
+                    .into_iter()
+                    .map(|f| f.path)
+                    .find(|path| {
+                        path.rsplit('/')
+                            .find(|name| !name.is_empty())
+                            .is_some_and(|name| name.to_lowercase().contains("anime"))
+                    })
+            }),
         }))
     }
 
