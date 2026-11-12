@@ -7,7 +7,9 @@
 //! Requests are made as the Seerr user who put the invoker's Discord id in their notification
 //! settings, so Seerr's permissions, quotas and auto-approval apply as if they'd used the site.
 //! Users who can bypass their quota get a second button that requests without counting against
-//! it, and users Seerr lets request 4K also get Request 4K buttons. Seerr picks the quality.
+//! it, and users Seerr lets request 4K also get Request 4K buttons. Users Seerr would show
+//! advanced options get a quality menu; otherwise Seerr picks the quality. The menu is shared by HD and 4K: each option is an HD
+//! profile and the 4K profile with the same tags in brackets, like "(Atmos)".
 
 use std::{collections::HashMap, time::Duration};
 
@@ -29,8 +31,8 @@ use crate::{
     arr::{Arr, Download, Removed},
     error::chain,
     seerr::{
-        self, Cancellable, Changed, Details, Media, Profiles, Quotas, Request, RequestStatus,
-        Requested, Requester, SearchResult, Status,
+        self, Cancellable, Changed, Details, Media, Profile, Profiles, Quotas, Request,
+        RequestStatus, Requested, Requester, SearchResult, Status,
     },
 };
 
@@ -44,6 +46,8 @@ const POSTER_URL: &str = "https://image.tmdb.org/t/p/w342";
 const OVERVIEW_MAX: usize = 350;
 /// Discord allows at most 25 options per select menu
 const MAX_OPTIONS: usize = 25;
+/// Discord allows at most 5 rows of components per message
+const MAX_ROWS: usize = 5;
 /// Reply when Seerr can't be reached
 const UNREACHABLE: &str = "Couldn't reach Seerr, try again in a bit \u{1fae4}";
 
@@ -108,13 +112,17 @@ async fn request_run<U: Data, E: From<Error>>(ctx: Context<'_, U, E>, title: Str
                     bypass: true,
                 }),
             ),
-            Some("-seasons") => {
-                // Only the menu and buttons change, so answer with them straight away
+            Some(menu @ ("-seasons" | "-quality")) => {
+                // Only the menus and buttons change, so answer with them straight away
                 let values = match &press.data.kind {
                     ComponentInteractionDataKind::StringSelect { values } => values.as_slice(),
                     _ => &[],
                 };
-                card.picked = values.iter().filter_map(|v| v.parse().ok()).collect();
+                if menu == "-seasons" {
+                    card.picked = values.iter().filter_map(|v| v.parse().ok()).collect();
+                } else {
+                    card.quality = values.first().and_then(|v| v.parse().ok());
+                }
                 let update =
                     CreateInteractionResponseMessage::new().components(card.components(&id));
                 press
@@ -241,8 +249,8 @@ struct Viewer {
     admin: bool,
     /// The user's quotas
     quotas: Option<Quotas>,
-    /// The default HD and 4K servers' quality profiles, only to know which servers there are. A
-    /// server missing here can't be requested from.
+    /// The default HD and 4K servers' quality profiles. A server missing here can't be
+    /// requested from.
     profiles: Vec<Profiles>,
 }
 
@@ -303,6 +311,10 @@ struct Card {
     versions: [Version; 2],
     /// Seasons picked in the menu. Empty means all of each version's open seasons.
     picked: Vec<u32>,
+    /// Qualities to pick from, empty if the invoker may not
+    qualities: Vec<Quality>,
+    /// Index of the quality picked in the menu, `None` for Seerr's choice
+    quality: Option<usize>,
     /// Whether the invoker has a quota for this kind of media and may bypass it
     can_bypass: bool,
     /// TVDB id, shows only, once Seerr knows of it
@@ -438,6 +450,12 @@ impl Card {
             ..version
         });
         let requestable = versions.iter().any(|v| v.requestable);
+        let qualities = if viewer.user.can_pick_profile() {
+            let list = |is_4k| viewer.server(media, is_4k).map_or(&[][..], |p| &p.list);
+            pair(list(false), list(true))
+        } else {
+            Vec::new()
+        };
 
         // One line each: "TV show quota: 4 of 6 seasons left (7 days)" and "1 of 20"
         let quota = viewer.quotas.as_ref().map(|q| match media {
@@ -486,6 +504,8 @@ impl Card {
             count: results.len(),
             versions,
             picked: Vec::new(),
+            qualities,
+            quality: None,
             can_bypass: limited && viewer.user.can_bypass_quota(),
             tvdb_id,
             links,
@@ -525,9 +545,15 @@ impl Card {
         bypass: bool,
     ) -> (Option<String>, bool) {
         let seasons = self.seasons(is_4k);
+        // The menu only offers profiles to users who may pick them
+        let profile = self
+            .quality
+            .and_then(|i| self.qualities.get(i))
+            .and_then(|q| q[usize::from(is_4k)].as_ref())
+            .map(|p| p.id);
         let options = seerr::Options {
             seasons: &seasons,
-            profile: None,
+            profile,
             ignore_quota: self.can_bypass && bypass,
             is_4k,
         };
@@ -558,8 +584,9 @@ impl Card {
         .await
     }
 
-    /// The season menu for shows with more than one open season, then rows of Request, Request 4K and their cancel buttons, the same bypassing
-    /// the quota, links once it's available, and ◀ ▶
+    /// The season menu for shows with more than one open season, the quality menu, then a row
+    /// of Request and Request 4K, the same bypassing the quota, and their cancel buttons, links
+    /// once it's available, and ◀ ▶
     fn components(&self, id: &str) -> Vec<CreateActionRow> {
         let button = |suffix: &str| CreateButton::new(format!("{id}-{suffix}"));
         let mut rows = Vec::new();
@@ -595,19 +622,34 @@ impl Card {
             ));
         }
 
-        // One row each, top to bottom, so they stay readable on phones: requesting and
-        // cancelling, requesting past the quota, links, then ◀ ▶
+        // Requesting, then past the quota, then cancelling, each HD then 4K
         let versions = [false, true];
         let mut request = Vec::new();
-        for (version, is_4k) in self.versions.iter().zip(versions) {
-            if self.requestable(is_4k) {
-                let suffix = if is_4k { "request-4k" } else { "request" };
-                request.push(
-                    button(suffix)
-                        .label(self.request_label(is_4k))
-                        .style(ButtonStyle::Primary),
-                );
+        for is_4k in versions
+            .into_iter()
+            .filter(|&is_4k| self.requestable(is_4k))
+        {
+            let suffix = if is_4k { "request-4k" } else { "request" };
+            request.push(
+                button(suffix)
+                    .label(self.request_label(is_4k))
+                    .style(ButtonStyle::Primary),
+            );
+        }
+        for is_4k in versions
+            .into_iter()
+            .filter(|&is_4k| self.requestable(is_4k))
+        {
+            if self.can_bypass {
+                let (suffix, label) = if is_4k {
+                    ("request-bypass-4k", "Request 4K and bypass quota")
+                } else {
+                    ("request-bypass", "Request and bypass quota")
+                };
+                request.push(button(suffix).label(label).style(ButtonStyle::Secondary));
             }
+        }
+        for (version, is_4k) in self.versions.iter().zip(versions) {
             if !version.cancellable.is_empty() {
                 let (suffix, label) = if is_4k {
                     ("cancel-4k", "Cancel 4K request")
@@ -615,17 +657,6 @@ impl Card {
                     ("cancel", "Cancel request")
                 };
                 request.push(button(suffix).label(label).style(ButtonStyle::Danger));
-            }
-        }
-        let mut bypass = Vec::new();
-        for is_4k in versions.into_iter().filter(|_| self.can_bypass) {
-            if self.requestable(is_4k) {
-                let (suffix, label) = if is_4k {
-                    ("request-bypass-4k", "Request 4K and bypass quota")
-                } else {
-                    ("request-bypass", "Request and bypass quota")
-                };
-                bypass.push(button(suffix).label(label).style(ButtonStyle::Secondary));
             }
         }
         let mut nav = Vec::new();
@@ -641,15 +672,74 @@ impl Card {
                     .style(ButtonStyle::Secondary),
             );
         }
-        // At most 4 buttons each, under Discord's 5, and with the season menu at most 5 rows,
-        // Discord's limit
-        rows.extend(
-            [request, bypass, self.links.clone(), nav]
-                .into_iter()
-                .filter(|row| !row.is_empty())
-                .map(CreateActionRow::Buttons),
-        );
+
+        // Rows of at most 5 buttons, Discord's limit: requesting (spilling onto a second row
+        // only when both versions can be requested past the quota and cancelled), links, then
+        // ◀ ▶. If that's more than the 5 rows Discord allows, ◀ ▶ lead the links' row, so a
+        // line break on phones doesn't split them.
+        let mut buttons: Vec<Vec<CreateButton>> =
+            request.chunks(5).map(<[CreateButton]>::to_vec).collect();
+        let quality = self.quality_menu(id);
+        let menus = rows.len() + usize::from(quality.is_some());
+        let separate = [!self.links.is_empty(), !nav.is_empty()];
+        if menus + buttons.len() + separate.iter().filter(|&&b| b).count() > MAX_ROWS {
+            nav.extend(self.links.iter().cloned());
+            buttons.push(nav);
+        } else {
+            buttons.extend([self.links.clone(), nav]);
+        }
+        let buttons: Vec<CreateActionRow> = buttons
+            .into_iter()
+            .filter(|row| !row.is_empty())
+            .map(CreateActionRow::Buttons)
+            .collect();
+
+        // At most 2 menus, 2 rows of requesting and ◀ ▶ with links, so it always fits
+        rows.extend(quality);
+        rows.extend(buttons);
         rows
+    }
+
+    /// The quality menu, one option per quality either requestable version has a profile for,
+    /// named by the HD profile if HD can be requested, else the 4K one. `None` if there's
+    /// nothing to pick.
+    fn quality_menu(&self, id: &str) -> Option<CreateActionRow> {
+        let [hd, uhd] = [false, true].map(|is_4k| self.requestable(is_4k));
+        let options: Vec<_> = self
+            .qualities
+            .iter()
+            .enumerate()
+            .filter_map(|(i, [hd_profile, uhd_profile])| {
+                let hd_profile = hd_profile.as_ref().filter(|_| hd);
+                let uhd_profile = uhd_profile.as_ref().filter(|_| uhd);
+                let name = &hd_profile.or(uhd_profile)?.name;
+                let mut option = CreateSelectMenuOption::new(name, i.to_string())
+                    .default_selection(self.quality == Some(i));
+                // Say what the other version gets, when both can be requested
+                if hd && uhd {
+                    let other = match (hd_profile, uhd_profile) {
+                        (Some(_), Some(p)) => format!("4K: {}", p.name),
+                        (Some(_), None) => "4K: default quality".into(),
+                        _ => "HD: default quality".into(),
+                    };
+                    option = option.description(other.chars().take(100).collect::<String>());
+                }
+                Some(option)
+            })
+            .take(MAX_OPTIONS)
+            .collect();
+        if options.is_empty() {
+            return None;
+        }
+        Some(CreateActionRow::SelectMenu(
+            CreateSelectMenu::new(
+                format!("{id}-quality"),
+                CreateSelectMenuKind::String { options },
+            )
+            .placeholder("Default quality")
+            .min_values(0)
+            .max_values(1),
+        ))
     }
 
     /// "Request", "Request season 2", "Request 3 seasons" or "Request all seasons" for the HD
@@ -663,6 +753,49 @@ impl Card {
             (_, many) => format!("{request} {} seasons", many.len()),
         }
     }
+}
+
+/// One choice in the quality menu: the HD and 4K profiles it picks. Either may be missing,
+/// leaving that version to Seerr's choice.
+type Quality = [Option<Profile>; 2];
+
+/// Pairs each HD profile with the first unpaired 4K profile with the same tags, then lists the
+/// 4K profiles left over on their own. Names differ by resolution ("HD Bluray + WEB" and "UHD
+/// Bluray + WEB"), so only what's in brackets counts: "(Atmos)" or "[Anime]".
+fn pair(hd: &[Profile], uhd: &[Profile]) -> Vec<Quality> {
+    let mut left: Vec<Option<&Profile>> = uhd.iter().map(Some).collect();
+    let mut qualities: Vec<Quality> = hd
+        .iter()
+        .map(|p| {
+            let wanted = tags(&p.name);
+            let matched = left
+                .iter_mut()
+                .find(|u| u.is_some_and(|u| tags(&u.name) == wanted))
+                .and_then(Option::take);
+            [Some(p.clone()), matched.cloned()]
+        })
+        .collect();
+    qualities.extend(left.into_iter().flatten().map(|p| [None, Some(p.clone())]));
+    qualities
+}
+
+/// What's in round or square brackets in a profile's name, lowercased and sorted
+fn tags(name: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    let mut current: Option<String> = None;
+    for c in name.chars() {
+        match (c, &mut current) {
+            ('(' | '[', _) => current = Some(String::new()),
+            (')' | ']', Some(tag)) => {
+                tags.push(tag.trim().to_lowercase());
+                current = None;
+            }
+            (c, Some(tag)) => tag.push(c),
+            _ => {}
+        }
+    }
+    tags.sort_unstable();
+    tags
 }
 
 /// How far a movie's or show's downloads in Radarr or Sonarr have got
@@ -1011,6 +1144,37 @@ mod tests {
             "Downloaded: 1\u{2013}2\nAutomatically approved, download queued: 3, 7\n\
              Approved, download started: 4\nAutomatically approved: 8\n\
              Requested, waiting for approval: 5\nNot requested: 6"
+        );
+    }
+
+    #[test]
+    fn paired() {
+        let profile = |id, name: &str| Profile {
+            id,
+            name: name.into(),
+        };
+        let hd = [
+            profile(7, "HD Bluray + WEB"),
+            profile(13, "[Anime] Remux-1080p"),
+            profile(14, "HD Bluray + WEB (Atmos)"),
+        ];
+        let uhd = [
+            profile(8, "UHD Bluray + WEB (Atmos)"),
+            profile(7, "UHD Bluray + WEB"),
+            profile(9, "Remux-2160p (DV)"),
+        ];
+        let ids: Vec<[Option<u32>; 2]> = pair(&hd, &uhd)
+            .iter()
+            .map(|q| q.each_ref().map(|p| p.as_ref().map(|p| p.id)))
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                [Some(7), Some(7)],
+                [Some(13), None],
+                [Some(14), Some(8)],
+                [None, Some(9)],
+            ]
         );
     }
 

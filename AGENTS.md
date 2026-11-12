@@ -146,19 +146,27 @@ store):
   rejects search queries with any unencoded reserved character (even `+`), so
   the query is percent-encoded by hand. Seerr's API will make a new request for
   an available movie, so only show Request when the status is missing.
-  `seerr.public_url` links the title to the Seerr page. There's no quality menu:
-  Seerr picks the profile (which handles anime); admins can change it on
-  `/requests` while the request is pending. Users with Manage Requests and a
-  quota get a "Request, bypass quota" button (`ignoreQuota`); Manage Users means
-  no quota at all. A "Cancel request" button shows while a request is waiting
-  for approval or approved but not downloaded yet, not even in part: requesters
-  for their own, bot admins (`is_admin`) for anyone's. The bot checks this
-  itself and asks Seerr as its admin. Approved requests come out of
-  Radarr/Sonarr directly (`arr.rs`, optional `[radarr]`/`[sonarr]` config):
-  queue items removed from qBittorrent, then the movie deleted, or for shows
-  only the request's seasons unmonitored (the series goes only if nothing's
-  left). Radarr/Sonarr are checked for files first, since Seerr can lag behind,
-  and nothing is touched if any exist.
+  `seerr.public_url` links the title to the Seerr page. Users with Seerr's
+  Manage Requests or Advanced Requests get one quality menu shared by Request
+  and Request 4K (`request::pair`): each option is a default HD server profile
+  and the default 4K server profile with the same bracketed tags ("(Atmos)",
+  "[Anime]"), either side missing meaning Seerr's choice for that version. Seerr
+  doesn't check permissions on `profileId`, so the bot does. The card's rows:
+  seasons, quality, one row of Request, Request 4K, their bypass-quota versions
+  and their cancels, the Jellyfin/Moonfin/Seerr links, then ◀ ▶. Discord allows
+  5 rows of 5 buttons, so when that's all 6 the last spills onto a second row
+  and ◀ ▶ lead the links' row instead. Nothing picked lets Seerr choose (which
+  handles anime); admins can change it on `/requests` while the request is
+  pending. Users with Manage Requests and a quota get a "Request, bypass quota"
+  button (`ignoreQuota`); Manage Users means no quota at all. A "Cancel request"
+  button shows while a request is waiting for approval or approved but not
+  downloaded yet, not even in part: requesters for their own, bot admins
+  (`is_admin`) for anyone's. The bot checks this itself and asks Seerr as its
+  admin. Approved requests come out of Radarr/Sonarr directly (`arr.rs`,
+  optional `[radarr]`/`[sonarr]` config): queue items removed from qBittorrent,
+  then the movie deleted, or for shows only the request's seasons unmonitored
+  (the series goes only if nothing's left). Radarr/Sonarr are checked for files
+  first, since Seerr can lag behind, and nothing is touched if any exist.
 - **`/requests`** (done): ephemeral list of requests, newest first, 10 per page
   with ◀ 🔄 ▶ and an optional status filter. Everyone sees their own (via
   `requestedBy`); bot admins see everyone's. A menu opens one as a card (poster,
@@ -181,14 +189,14 @@ store):
   itself. Request lists carry no titles, so each row's details are fetched;
   Seerr gets them from TMDB, which can take its whole timeout. A row waits at
   most 3s (`LIST_WAIT`), then shows its title from `Seerr::titles` (kept from
-  every details lookup, least recently used dropped past 2000) and "Loading…" for an approved
-  status. Those are fetched again in the background with the usual timeout and
-  the list rebuilt if any arrive. Opening a card from the list works the same
-  way: past 3s it shows what the request itself says with only ◀ 🔄 ▶ and All
-  requests until its details arrive. What the background lookup gets, failures
-  included, goes to the next build (`Viewer::arrived`) so nothing is asked twice
-  or left loading. One collector stream serves the whole command, so presses
-  made mid-rebuild wait. Request posts still wait for them.
+  every details lookup, least recently used dropped past 2000) and "Loading…"
+  for an approved status. Those are fetched again in the background with the
+  usual timeout and the list rebuilt if any arrive. Opening a card from the list
+  works the same way: past 3s it shows what the request itself says with only ◀
+  🔄 ▶ and All requests until its details arrive. What the background lookup
+  gets, failures included, goes to the next build (`Viewer::arrived`) so nothing
+  is asked twice or left loading. One collector stream serves the whole command,
+  so presses made mid-rebuild wait. Request posts still wait for them.
 - **`/streams`** (done): ephemeral, since views differ. Everyone gets the stream
   count, upload in use and who's watching. Admins also get what each stream is
   playing, direct play or transcode, and LAN bitrate. Bitrates count unpaused
