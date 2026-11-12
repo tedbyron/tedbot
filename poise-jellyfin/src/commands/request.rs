@@ -761,7 +761,8 @@ type Quality = [Option<Profile>; 2];
 
 /// Pairs each HD profile with the first unpaired 4K profile with the same tags, then lists the
 /// 4K profiles left over on their own. Names differ by resolution ("HD Bluray + WEB" and "UHD
-/// Bluray + WEB"), so only what's in brackets counts: "(Atmos)" or "[Anime]".
+/// Bluray + WEB"), so only what's in brackets counts: "(Atmos)" or "[Anime]". Pairs come first,
+/// then those for one version only, like anime; each untagged before tagged, else as listed.
 fn pair(hd: &[Profile], uhd: &[Profile]) -> Vec<Quality> {
     let mut left: Vec<Option<&Profile>> = uhd.iter().map(Some).collect();
     let mut qualities: Vec<Quality> = hd
@@ -776,6 +777,10 @@ fn pair(hd: &[Profile], uhd: &[Profile]) -> Vec<Quality> {
         })
         .collect();
     qualities.extend(left.into_iter().flatten().map(|p| [None, Some(p.clone())]));
+    qualities.sort_by_key(|q| {
+        let tagged = q.iter().flatten().any(|p| !tags(&p.name).is_empty());
+        (q.iter().any(Option::is_none), tagged)
+    });
     qualities
 }
 
@@ -1171,8 +1176,8 @@ mod tests {
             ids,
             [
                 [Some(7), Some(7)],
-                [Some(13), None],
                 [Some(14), Some(8)],
+                [Some(13), None],
                 [None, Some(9)],
             ]
         );
