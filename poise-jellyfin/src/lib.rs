@@ -1,7 +1,7 @@
 //! A Jellyfin media server for [poise] Discord bots: slash commands for requesting media through
 //! Seerr (`/request`, `/requests`), seeing who's streaming (`/streams`), ErsatzTV's live TV
 //! guide (`/tv`), and admin tools (`/restart`, `/refresh-users`), plus Seerr's webhook, which
-//! posts new and available requests in Discord.
+//! posts new and available requests in Discord, and posts when a Jellyfin account is disabled.
 //!
 //! The bot's data (poise's `U`) holds a [`MediaServer`] and implements `AsRef<MediaServer>`
 //! (`MediaServer` itself already does), and its error (`E`) converts from [`Error`]:
@@ -9,7 +9,7 @@
 //! ```ignore
 //! // Shut down for the service manager to start the bot again; `None` can't restart
 //! let restart = RestartBot::new(|shards| async move { shards.shutdown_all().await });
-//! let server = MediaServer::new(&cfg.server, admins, http, Some(restart))?;
+//! let server = MediaServer::new(&cfg.server, channels, admins, http, Some(restart))?;
 //! let webhook = poise_jellyfin::Listener::bind(&cfg.server).await?;
 //! let options = FrameworkOptions {
 //!     commands: poise_jellyfin::commands(),
@@ -21,6 +21,7 @@
 //! if let Some(webhook) = webhook {
 //!     webhook.spawn(ctx.http.clone(), server.clone());
 //! }
+//! poise_jellyfin::watch_accounts(ctx.http.clone(), server.clone());
 //! ```
 //!
 //! The commands are only for Discord users who put their Discord id in their Seerr notification
@@ -29,6 +30,7 @@
 //! [`Error::SkipChecksForOwners`] on `Ready` if it's set, but poise only hands that to `on_error`,
 //! so it doesn't stop the bot.
 
+mod accounts;
 mod announce;
 mod arr;
 mod commands;
@@ -44,9 +46,10 @@ use std::{fmt, ops::Deref, sync::Arc, time::Duration};
 use futures::future::BoxFuture;
 use poise::serenity_prelude::{self as serenity, ShardManager, UserId};
 
+pub use accounts::watch_accounts;
 pub use config::{
-    Config, ErsatzTvConfig, JellyfinConfig, Radarr4kConfig, RadarrConfig, SeerrConfig,
-    Sonarr4kConfig, SonarrConfig, WebhookConfig,
+    ChannelsConfig, Config, ErsatzTvConfig, JellyfinConfig, Radarr4kConfig, RadarrConfig,
+    SeerrConfig, Sonarr4kConfig, SonarrConfig, WebhookConfig,
 };
 pub use error::{Error, Result};
 pub use webhook::Listener;
@@ -67,6 +70,8 @@ pub struct Shared {
     jellyfin: jellyfin::Jellyfin,
     /// Whether Jellyfin has the Moonfin plugin
     moonfin: bool,
+    /// Where to post
+    channels: ChannelsConfig,
     /// Restarts Jellyfin for `/restart`, if configured; else Jellyfin restarts itself
     jellyfin_restart: Option<Vec<String>>,
     /// Restarts the bot for `/restart`, if it can be
@@ -90,13 +95,15 @@ pub struct Shared {
 }
 
 impl MediaServer {
-    /// Connects to nothing yet; services are asked as commands need them. `admins` can restart
+    /// Connects to nothing yet; services are asked as commands need them. `channels` are where
+    /// requests and account changes are posted. `admins` can restart
     /// services, approve and cancel anyone's requests, and see what's streaming, and are pinged
     /// for requests waiting for approval. Give `http` a timeout: requests wait as long as it
     /// allows. `/restart` only offers to restart the bot with `restart_bot`. Fails if an API key
     /// is empty or the restart command is.
     pub fn new(
         cfg: &Config,
+        channels: ChannelsConfig,
         admins: Vec<UserId>,
         http: reqwest::Client,
         restart_bot: Option<RestartBot>,
@@ -131,6 +138,7 @@ impl MediaServer {
             },
             moonfin: cfg.jellyfin.moonfin,
             jellyfin_restart: cfg.jellyfin.restart_command.clone(),
+            channels,
             restart_bot,
             seerr: seerr::Seerr {
                 url: cfg.seerr.url.clone(),

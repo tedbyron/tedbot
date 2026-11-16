@@ -6,7 +6,7 @@
 //! their quality and seasons before approving. Buttons work until [`NAV_TIMEOUT`] passes with no
 //! press, then they're removed.
 //!
-//! New requests are also posted in `seerr.webhook.requests_channels` as the same card, made for
+//! New requests are also posted in `admin_channels` as the same card, made for
 //! admins ([`post_card`]). Those buttons work for as long as the post is there ([`post_press`]).
 
 use std::{

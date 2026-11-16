@@ -1,5 +1,5 @@
-//! Posts in Discord when Seerr's webhook says a request was made (`seerr.webhook.requests_channels`)
-//! or its movie or seasons are available in Jellyfin (`seerr.webhook.available_channels`).
+//! Posts in Discord when Seerr's webhook says a request was made (`admin_channels`) or its movie
+//! or seasons are available in Jellyfin (`available_channels`).
 
 use std::sync::Arc;
 
@@ -10,7 +10,7 @@ use poise::serenity_prelude::{
 use tracing::warn;
 
 use crate::{
-    Error, MediaServer, Result,
+    ChannelsConfig, Error, MediaServer, Result,
     commands::{
         escape,
         request::{check_partial, ranges, truncate},
@@ -34,18 +34,12 @@ pub enum Event {
     Available,
 }
 
-/// Where to post
-#[derive(Debug, Default)]
-pub struct Targets {
-    pub requests: Vec<ChannelId>,
-    pub available: Vec<ChannelId>,
-}
-
-impl Targets {
-    pub fn channels(&self, event: Event) -> &[ChannelId] {
+impl ChannelsConfig {
+    /// Where to post about `event`
+    pub(crate) fn channels(&self, event: Event) -> &[ChannelId] {
         match event {
-            Event::Requested => &self.requests,
-            Event::Available => &self.available,
+            Event::Requested => &self.admin_channels,
+            Event::Available => &self.available_channels,
         }
     }
 }
@@ -57,7 +51,7 @@ impl Targets {
 pub async fn post(
     discord: &Arc<Http>,
     data: &MediaServer,
-    targets: &Targets,
+    targets: &ChannelsConfig,
     event: Event,
     request: &Request,
 ) -> Result<Vec<(ChannelId, MessageId)>> {
@@ -67,7 +61,7 @@ pub async fn post(
             // Only requests waiting for approval need an admin, pinged where they're in the
             // channel's server
             let pending = request.status == RequestStatus::Pending;
-            for &channel in &targets.requests {
+            for &channel in &targets.admin_channels {
                 let guild = guild(discord, channel).await;
                 let mut ping = Vec::new();
                 if let Some(guild) = guild.filter(|_| pending) {
@@ -106,7 +100,7 @@ pub async fn post(
                 None => None,
             };
             let name = by.and_then(|by| by.display_name.as_deref()).map(escape);
-            for &channel in &targets.available {
+            for &channel in &targets.available_channels {
                 let mut embed = embed.clone();
                 if let Some(requester) = requester(discord, channel, linked)
                     .await
@@ -206,9 +200,13 @@ async fn guild(discord: &Http, channel: ChannelId) -> Option<GuildId> {
     }
 }
 
-/// A mention of `linked`, the requester's Discord account, if it's in `channel`'s server. A
-/// mention in an embed never pings.
-async fn requester(discord: &Http, channel: ChannelId, linked: Option<UserId>) -> Option<String> {
+/// A mention of `linked`, someone's Discord account, if it's in `channel`'s server. A mention in
+/// an embed never pings.
+pub async fn requester(
+    discord: &Http,
+    channel: ChannelId,
+    linked: Option<UserId>,
+) -> Option<String> {
     let linked = linked?;
     guild(discord, channel)
         .await?

@@ -6,6 +6,15 @@ token = ''
 # User ids of the bot's admins, in every server. They're pinged for requests waiting for approval.
 # admins = ['123456789012345678']
 
+# Channels for admins. New requests are posted here with buttons to approve
+# them (needs [seerr.webhook]; admins are pinged for ones waiting for
+# approval), and Jellyfin accounts being disabled (by an admin or after too
+# many failed sign-ins) or enabled again, checked every 15 minutes.
+# admin_channels = ['123456789012345678']
+# Channels to post in when a request is available in Jellyfin (needs
+# [seerr.webhook])
+# available_channels = ['123456789012345678']
+
 # Bot activity (competing [in] || listening [to] || playing || streaming || watching)
 [discord.activity]
 # type = 'listening'
@@ -34,11 +43,6 @@ public_url = 'https://seerr.example.com'
 # [seerr.webhook]
 # port = 5056
 # forward = ['http://localhost:8096/Moonfin/Seerr/Webhook?secret=...']
-# Channels to post in when a request is made, bot needs permission to mention
-# all roles
-# requests_channels = ['123456789012345678']
-# Channels to post in when a request is available in Jellyfin
-# available_channels = ['123456789012345678']
 
 # Radarr and Sonarr, so /request and /requests can cancel approved requests that
 # are still downloading. Without them, only requests waiting for approval can be

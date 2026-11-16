@@ -5,7 +5,7 @@
 //! New and available requests are posted in Discord ([`announce`]), and request posts are kept
 //! up to date as Seerr says their requests change. Seerr doesn't say when a show is partly
 //! downloaded or a download starts, so open requests' posts are also rebuilt every
-//! [`SWEEP_EVERY`], starting with those found in the requests channels at startup. Posts are only
+//! [`SWEEP_EVERY`], starting with those found in the admin channels at startup. Posts are only
 //! edited when they'd change: Discord allows only a few edits a minute to messages over an hour
 //! old.
 //!
@@ -39,14 +39,14 @@ use tracing::{error, info, warn};
 
 use crate::{
     Config, Error, MediaServer, Result,
-    announce::{self, Event, Targets},
+    announce::{self, Event},
     commands::requests::{mark_gone, post_now, post_request},
     error::chain,
 };
 
 /// How often open requests' posts are rebuilt
 const SWEEP_EVERY: Duration = Duration::from_secs(15 * 60);
-/// How many of each requests channel's latest messages are searched for posts at startup
+/// How many of each admin channel's latest messages are searched for posts at startup
 const HISTORY: usize = 1000;
 /// How many posts are rebuilt at once
 const SWEEP_AT_ONCE: usize = 4;
@@ -56,7 +56,6 @@ const SWEEP_AT_ONCE: usize = 4;
 pub struct Listener {
     listener: TcpListener,
     forward: Vec<String>,
-    targets: Targets,
 }
 
 /// What a notification handler needs
@@ -65,14 +64,13 @@ struct Hook {
     data: MediaServer,
     /// Where to pass notifications on to
     forward: Vec<String>,
-    targets: Targets,
     /// Requests posted, since Seerr can say the same thing more than once
     posted: Mutex<HashSet<(Event, u32)>>,
-    /// Each open request's posts in the requests channels
+    /// Each open request's posts in the admin channels
     posts: Mutex<HashMap<u32, Vec<(ChannelId, MessageId)>>>,
     /// What each post shows, as [`look`] has it, so rebuilding it only edits it if that changed
     shown: Mutex<HashMap<MessageId, Value>>,
-    /// The server each requests channel is in, as looked up so far
+    /// The server each admin channel is in, as looked up so far
     guilds: Mutex<HashMap<ChannelId, Option<GuildId>>>,
 }
 
@@ -99,25 +97,15 @@ impl Listener {
         let Some(c) = &cfg.seerr.webhook else {
             return Ok(None);
         };
-        let targets = Targets {
-            requests: c.requests_channels.clone(),
-            available: c.available_channels.clone(),
-        };
-        Self::bind_port(c.port, c.forward.clone(), targets)
-            .await
-            .map(Some)
+        Self::bind_port(c.port, c.forward.clone()).await.map(Some)
     }
 
     /// Binds localhost:`port`
-    async fn bind_port(port: u16, forward: Vec<String>, targets: Targets) -> Result<Self> {
+    async fn bind_port(port: u16, forward: Vec<String>) -> Result<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
             .await
             .map_err(|source| Error::Bind { port, source })?;
-        Ok(Self {
-            listener,
-            forward,
-            targets,
-        })
+        Ok(Self { listener, forward })
     }
 
     /// Serves in the background for as long as the bot runs. Call it once Discord is connected.
@@ -127,13 +115,12 @@ impl Listener {
             discord,
             data,
             forward: self.forward,
-            targets: self.targets,
             posted: Mutex::default(),
             posts: Mutex::default(),
             shown: Mutex::default(),
             guilds: Mutex::default(),
         });
-        if !hook.targets.requests.is_empty() {
+        if !hook.data.channels.admin_channels.is_empty() {
             let hook = hook.clone();
             tokio::spawn(async move { hook.sweep().await });
         }
@@ -265,7 +252,7 @@ impl Hook {
         }
     }
 
-    /// Rebuilds request `id`'s posts in the requests channels. Returns whether it may still
+    /// Rebuilds request `id`'s posts in the admin channels. Returns whether it may still
     /// change, which it's taken to if any post couldn't be rebuilt.
     async fn refresh(&self, id: u32) -> bool {
         let posts = self.posts.lock().unwrap().get(&id).cloned();
@@ -319,7 +306,7 @@ impl Hook {
         Ok(guild)
     }
 
-    /// Finds the posts in the requests channels, then rebuilds open requests' posts every
+    /// Finds the posts in the admin channels, then rebuilds open requests' posts every
     /// [`SWEEP_EVERY`], forgetting the rest
     async fn sweep(&self) {
         self.find_posts().await;
@@ -341,7 +328,7 @@ impl Hook {
         }
     }
 
-    /// Adds the bot's posts in the last [`HISTORY`] messages of each requests channel
+    /// Adds the bot's posts in the last [`HISTORY`] messages of each admin channel
     async fn find_posts(&self) {
         let me = match self.discord.get_current_user().await {
             Ok(user) => user.id,
@@ -350,7 +337,7 @@ impl Hook {
                 return;
             }
         };
-        for &channel in &self.targets.requests {
+        for &channel in &self.data.channels.admin_channels {
             let found = match posts_in(&self.discord, channel, me).await {
                 Ok(found) => found,
                 Err(e) => {
@@ -375,7 +362,8 @@ impl Hook {
     /// Posts `event` for request `id`, if it hasn't been already
     async fn announce(&self, event: Event, id: u32) {
         let key = (event, id);
-        if self.targets.channels(event).is_empty() || !self.posted.lock().unwrap().insert(key) {
+        if self.data.channels.channels(event).is_empty() || !self.posted.lock().unwrap().insert(key)
+        {
             return;
         }
         let request = match self.data.seerr.request_by_id(&self.data.http, id).await {
@@ -387,7 +375,15 @@ impl Hook {
                 return;
             }
         };
-        match announce::post(&self.discord, &self.data, &self.targets, event, &request).await {
+        match announce::post(
+            &self.discord,
+            &self.data,
+            &self.data.channels,
+            event,
+            &request,
+        )
+        .await
+        {
             Ok(posts) if event == Event::Requested => {
                 self.posts
                     .lock()
@@ -469,7 +465,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        Shared,
+        ChannelsConfig, Shared,
         commands::requests::{Members, ProfileCache},
         ersatztv::GuideCache,
         seerr::{Links, Seerr, Titles},
@@ -545,7 +541,6 @@ mod tests {
                 format!("{}/ok", upstream.url()),
                 format!("{}/hook", upstream.url()),
             ],
-            Targets::default(),
         )
         .await
         .unwrap();
@@ -561,6 +556,7 @@ mod tests {
             http,
             moonfin: false,
             jellyfin_restart: None,
+            channels: ChannelsConfig::default(),
             restart_bot: None,
             seerr: Seerr {
                 url: unused(),

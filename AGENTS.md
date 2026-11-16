@@ -18,16 +18,25 @@ home media server.
   `Error`, whose messages leave out their source, so logs print the whole chain
   with `error::chain`. `tedbot/` is just the bot: `main.rs` reads the config
   (`config.rs` flattens the library's `Config` next to `[discord]` and
-  `log_level`), registers the commands, routes events to
-  `poise_jellyfin::handle_event`, and starts the webhook (`Listener`) in `setup`
-  once the gateway is ready. Its data is `MediaServer`, which holds its state in
-  an `Arc`, so clones (one for the webhook) share it. The commands rely on their
-  `linked` check, so poise's `skip_checks_for_owners` isn't supported: tedbot
-  refuses to start with it, and `handle_event` returns an error on `Ready` if
-  it's set (poise only hands that to `on_error`, so it doesn't stop the bot).
+  `log_level`, and its `ChannelsConfig` into `[discord]`), registers the
+  commands, routes events to `poise_jellyfin::handle_event`, and starts the
+  webhook (`Listener`) in `setup` once the gateway is ready. Its data is
+  `MediaServer`, which holds its state in an `Arc`, so clones (one for the
+  webhook) share it. The commands rely on their `linked` check, so poise's
+  `skip_checks_for_owners` isn't supported: tedbot refuses to start with it, and
+  `handle_event` returns an error on `Ready` if it's set (poise only hands that
+  to `on_error`, so it doesn't stop the bot).
 - Config is read from `$TEDBOT_CONFIG`, falling back to `config.toml` in the
   working directory (gitignored; see `config.example.toml`). Secrets go there,
-  never in the repo.
+  never in the repo. The live config is `~/.config/tedbot/config.toml`
+  (dotfiles' `tedbot.nix` sets `$TEDBOT_CONFIG`); when renaming or moving a key,
+  update it and `config.example.toml` too. Unknown keys are ignored, so an old
+  binary reading a new config just loses that setting until it's deployed; the
+  running bot only reads it at startup.
+- Don't `cargo run` the bot locally against the live config: it would be a
+  second instance on the production token. Check API shapes with `curl` against
+  the localhost services instead (Jellyfin's key is `jellyfin.api_key` in the
+  live config, sent as `Authorization: MediaBrowser Token="<key>"`).
 - Edition 2024, stable toolchain via `rust-toolchain.toml`, poise 0.7 / serenity
   0.12.
 - `flake.nix` exposes `packages.default` (crane with the rust-overlay
@@ -81,31 +90,38 @@ store):
 - **Status command**: Grafana/Prometheus status, either a link to the dashboard
   view or a generated graphic. Grafana's image renderer plugin is awkward on
   macOS; prefer querying Prometheus directly and drawing the chart.
-- **Requests channel** (done): posts in each of
-  `seerr.webhook.requests_channels` when Seerr's webhook sends `MEDIA_PENDING`
-  or `MEDIA_AUTO_APPROVED` (dotfiles' `seerr.nix` turns that type on). The post
-  is `/requests`' card as an admin sees it (`requests::post_card`), without the
-  list buttons but with 🔄 and a Seerr link button instead of a linked title:
-  Approve, Approve all N (its confirmation is ephemeral), Decline, season and
-  quality menus, or Cancel request. Anyone sees the buttons, so presses are
-  checked with `is_admin_user`, except 🔄. The buttons have to outlive any
-  command, so presses come through poise's `event_handler`
-  (`requests::post_press`), with custom ids `request-post:<id>-<action>`.
-  `discord.admins` who are in the channel's server are pinged for requests
-  waiting for approval (the only allowed mentions). The webhook keeps each open
-  request's posts, found in the channels' last 1000 messages at startup, and
-  rebuilds them on `MEDIA_APPROVED`, `MEDIA_DECLINED`, `MEDIA_AVAILABLE` and
-  `MEDIA_FAILED`, and every 15 minutes, since Seerr says nothing when a show is
-  partly downloaded (`MEDIA_AVAILABLE` waits for every requested season) or a
-  download starts. Declined, completed and deleted requests are dropped. Posts
-  are only edited when what they show changed: Discord allows only a few edits a
-  minute to messages over an hour old.
+- **Channels**: every Discord channel the bot posts in is configured under
+  `[discord]` (`ChannelsConfig`, flattened into tedbot's `DiscordConfig` and
+  passed to `MediaServer::new`, which keeps it as `channels`), not in the
+  services' sections. Add new ones there.
+- **Admin channels** (`discord.admin_channels`): new requests (below, needs
+  `[seerr.webhook]`) and disabled accounts. Live, that's the same channel
+  Alertmanager's service alerts post in (dotfiles' `alertmanager.nix`, through a
+  Discord webhook URL rather than the bot).
+- **Request posts** (done): posts in each of `discord.admin_channels` when
+  Seerr's webhook sends `MEDIA_PENDING` or `MEDIA_AUTO_APPROVED` (dotfiles'
+  `seerr.nix` turns that type on). The post is `/requests`' card as an admin
+  sees it (`requests::post_card`), without the list buttons but with 🔄 and a
+  Seerr link button instead of a linked title: Approve, Approve all N (its
+  confirmation is ephemeral), Decline, season and quality menus, or Cancel
+  request. Anyone sees the buttons, so presses are checked with `is_admin_user`,
+  except 🔄. The buttons have to outlive any command, so presses come through
+  poise's `event_handler` (`requests::post_press`), with custom ids
+  `request-post:<id>-<action>`. `discord.admins` who are in the channel's server
+  are pinged for requests waiting for approval (the only allowed mentions). The
+  webhook keeps each open request's posts, found in the channels' last 1000
+  messages at startup, and rebuilds them on `MEDIA_APPROVED`, `MEDIA_DECLINED`,
+  `MEDIA_AVAILABLE` and `MEDIA_FAILED`, and every 15 minutes, since Seerr says
+  nothing when a show is partly downloaded (`MEDIA_AVAILABLE` waits for every
+  requested season) or a download starts. Declined, completed and deleted
+  requests are dropped. Posts are only edited when what they show changed:
+  Discord allows only a few edits a minute to messages over an hour old.
 - **Available channel** (done): "now available" posts in each of
-  `seerr.webhook.available_channels` when Seerr's webhook sends
-  `MEDIA_AVAILABLE`: poster, title, overview, the requested seasons that are
-  available, and requester, with Jellyfin, Moonfin Web (`jellyfin.moonfin`) and
-  Seerr link buttons. Only posted if the request's movie or seasons are
-  available, and once per request per run.
+  `discord.available_channels` when Seerr's webhook sends `MEDIA_AVAILABLE`:
+  poster, title, overview, the requested seasons that are available, and
+  requester, with Jellyfin, Moonfin Web (`jellyfin.moonfin`) and Seerr link
+  buttons. Only posted if the request's movie or seasons are available, and once
+  per request per run.
 - 4K requests (dotfiles' `radarr-4k`/`sonarr-4k`, Seerr's default 4K servers)
   are read from Seerr's `status4k`, `mediaUrl4k` and `jellyfinMediaId4k`, and
   marked "(4K)". Cancelling one takes it out of the 4K Radarr or Sonarr
@@ -122,8 +138,22 @@ store):
   from TVDB (Sonarr's), so a finished season can stay "partly downloaded". The
   bot counts it as downloaded when Sonarr has a file for every monitored episode
   (`check_partial`).
-- Both channels' posts come from `announce.rs`. The requester shows as a mention
-  (no ping: it's in an embed) when their `discordIds` account is in that
+- **Disabled accounts** (done, `accounts.rs`): posts in each of
+  `discord.admin_channels` when a Jellyfin account is disabled (by an admin, or
+  by Jellyfin after `LoginAttemptsBeforeLockout` failed sign-ins; -1 means
+  Jellyfin's default) or enabled again, styled like Alertmanager's posts (red
+  `0x992d22`, then green `0x2ecc71`, title only). Jellyfin doesn't push this, so
+  `GET /Users` (`Policy.IsDisabled`) is polled every 15 minutes; the first poll
+  only records, so changes while the bot was down aren't posted. Jellyfin logs a
+  lockout as a `UserLockedOut` activity entry with the user's id, next to an
+  `AuthenticationFailed` one with a zero `UserId`, a localized name ("Failed
+  login attempt from th") and "IP address: <ip>" as `ShortOverview`. A lockout
+  within the last two polls adds "Locked out after N failed sign-ins, the last
+  from <IP>" (the failed sign-in is matched by time, since its text is
+  localized), and the Seerr-linked Discord account shows as a mention when it's
+  in the channel's server. Started from tedbot's `setup` with `watch_accounts`.
+- Request and available posts come from `announce.rs`. The requester shows as a
+  mention (no ping: it's in an embed) when their `discordIds` account is in that
   channel's server, else by Seerr name. They need Send Messages and Embed Links
   in the channel.
 - **Webhook** (`webhook.rs`, `[seerr.webhook]` config): listens on localhost
@@ -250,8 +280,9 @@ store):
   `prometheus.nix` next to the existing ones and a Grafana dashboard for it
   (Grafana currently only provisions the datasource, so dashboard provisioning
   needs adding in `grafana.nix`).
-- Maybe later: admin alerts (tunnel down, disk space, target down, stuck
-  downloads), "report a problem" button creating a Seerr issue.
+- Maybe later: more admin alerts in `admin_channels` (tunnel down, disk space,
+  target down, stuck downloads), "report a problem" button creating a Seerr
+  issue.
 
 Seerr and Jellyfin (Webhook plugin) can push events by HTTP POST. Seerr's
 already comes to the bot (`webhook.rs`); new Seerr events go there. Any other

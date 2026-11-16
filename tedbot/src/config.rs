@@ -31,6 +31,9 @@ pub struct DiscordConfig {
     pub admins: Vec<UserId>,
     /// Optional Discord activity
     pub activity: Option<DiscordActivityConfig>,
+    /// Where the media server posts
+    #[serde(flatten)]
+    pub channels: poise_jellyfin::ChannelsConfig,
 }
 
 /// Bot status line, e.g. "Listening to /commands". Nothing is shown unless both `type` and `name`
@@ -65,6 +68,17 @@ mod tests {
         assert_eq!(cfg.server.jellyfin.url, "http://localhost:8096");
         assert!(cfg.server.radarr.is_none());
         assert_eq!(cfg.log_level, LevelFilter::WARN);
+    }
+
+    #[test]
+    fn channels() {
+        let cfg: Config = toml::from_str(
+            "[discord]\ntoken = ''\nadmin_channels = ['1']\navailable_channels = ['2', '3']\n\
+             [jellyfin]\napi_key = ''\n[seerr]\napi_key = ''",
+        )
+        .unwrap();
+        assert_eq!(cfg.discord.channels.admin_channels, [1]);
+        assert_eq!(cfg.discord.channels.available_channels, [2, 3]);
     }
 
     #[test]

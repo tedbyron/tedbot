@@ -137,6 +137,18 @@ fn default_sonarr_4k_url() -> String {
     "http://localhost:8990".into()
 }
 
+/// Where to post. Meant to be flattened into the bot's own Discord config.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ChannelsConfig {
+    /// Channels for admins: new requests, with buttons to approve them (with Seerr's webhook),
+    /// and Jellyfin accounts being disabled or enabled again
+    #[serde(default)]
+    pub admin_channels: Vec<ChannelId>,
+    /// Channels to post in when a request is available in Jellyfin (with Seerr's webhook)
+    #[serde(default)]
+    pub available_channels: Vec<ChannelId>,
+}
+
 /// Listener for Seerr's webhook, on localhost
 #[derive(Debug, Deserialize)]
 pub struct WebhookConfig {
@@ -145,12 +157,6 @@ pub struct WebhookConfig {
     /// URLs to pass every notification on to, since Seerr only has one webhook. One URL or a list.
     #[serde(default, deserialize_with = "one_or_many")]
     pub forward: Vec<String>,
-    /// Channels to post in when a request is made
-    #[serde(default)]
-    pub requests_channels: Vec<ChannelId>,
-    /// Channels to post in when a request is available in Jellyfin
-    #[serde(default)]
-    pub available_channels: Vec<ChannelId>,
 }
 
 /// A string or a list of them

@@ -2,6 +2,7 @@
 
 use std::{fmt, net::IpAddr, time::Duration};
 
+use chrono::{DateTime, Utc};
 use reqwest::Result;
 use serde::Deserialize;
 
@@ -141,6 +142,61 @@ pub struct TranscodingInfo {
     pub is_audio_direct: bool,
 }
 
+/// A Jellyfin account, from `GET /Users`
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct User {
+    /// Jellyfin's id for it, 32 hex digits
+    pub id: String,
+    /// Sign-in name
+    pub name: String,
+    /// What it may do; missing only if Jellyfin leaves it out
+    #[serde(default)]
+    pub policy: Policy,
+}
+
+/// What an account may do. Only the fields we read are deserialized.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct Policy {
+    /// Whether it can't sign in, set by an admin or after too many failed sign-ins
+    #[serde(default)]
+    pub is_disabled: bool,
+    /// Failed sign-ins that disable it; -1 or 0 for Jellyfin's default
+    pub login_attempts_before_lockout: Option<i32>,
+}
+
+/// Response of `GET /System/ActivityLog/Entries`
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct Activities {
+    /// Newest first
+    items: Vec<Activity>,
+}
+
+/// An entry in Jellyfin's activity log
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct Activity {
+    /// `UserLockedOut`, `AuthenticationFailed`, `SessionStarted`, ...
+    pub r#type: String,
+    /// When, in RFC 3339
+    pub date: String,
+    /// Whose account it's about; all zeros for failed sign-ins
+    pub user_id: Option<String>,
+    /// e.g. "IP address: 192.168.2.1" for failed sign-ins
+    pub short_overview: Option<String>,
+}
+
+impl Activity {
+    /// [`Self::date`], if it parses
+    pub fn date(&self) -> Option<DateTime<Utc>> {
+        DateTime::parse_from_rfc3339(&self.date)
+            .ok()
+            .map(|d| d.to_utc())
+    }
+}
+
 impl Jellyfin {
     /// Starts an authenticated `GET` of `path` (with a leading `/`)
     fn get(&self, http: &reqwest::Client, path: &str) -> reqwest::RequestBuilder {
@@ -191,6 +247,29 @@ impl Jellyfin {
             .await?
             .error_for_status()?;
         Ok(())
+    }
+
+    /// Every account
+    pub async fn users(&self, http: &reqwest::Client) -> Result<Vec<User>> {
+        self.get(http, "/Users")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await
+    }
+
+    /// The newest `limit` entries in the activity log, newest first
+    pub async fn activity(&self, http: &reqwest::Client, limit: u32) -> Result<Vec<Activity>> {
+        let activities: Activities = self
+            .get(http, "/System/ActivityLog/Entries")
+            .query(&[("limit", limit)])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(activities.items)
     }
 
     /// Sessions that are playing something, in Jellyfin's order

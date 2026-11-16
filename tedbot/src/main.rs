@@ -79,8 +79,14 @@ async fn run() -> Result<()> {
     // The client then stops, `main` exits, and the service manager (launchd's `KeepAlive` in
     // dotfiles) starts the bot again
     let restart = RestartBot::new(|shards| async move { shards.shutdown_all().await });
-    let data =
-        MediaServer::new(&cfg.server, cfg.discord.admins, http, Some(restart)).context(path)?;
+    let data = MediaServer::new(
+        &cfg.server,
+        cfg.discord.channels,
+        cfg.discord.admins,
+        http,
+        Some(restart),
+    )
+    .context(path)?;
     let webhook = poise_jellyfin::Listener::bind(&cfg.server).await?;
     let framework = Framework::builder()
         .setup(move |ctx, ready, framework| {
@@ -138,7 +144,8 @@ async fn pre_command(ctx: Context<'_>) {
 }
 
 /// Runs once the gateway is ready: registers commands, logs the invite link, sets the activity,
-/// and starts serving the webhook. Returns the shared [`Data`] for poise to hand to commands.
+/// starts serving the webhook, and starts watching for disabled Jellyfin accounts. Returns the
+/// shared [`Data`] for poise to hand to commands.
 #[tracing::instrument(skip_all)]
 async fn setup(
     ctx: &serenity::Context,
@@ -164,6 +171,7 @@ async fn setup(
     if let Some(webhook) = webhook {
         webhook.spawn(ctx.http.clone(), data.clone());
     }
+    poise_jellyfin::watch_accounts(ctx.http.clone(), data.clone());
 
     Ok(data)
 }
