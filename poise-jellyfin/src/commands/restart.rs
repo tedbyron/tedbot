@@ -31,9 +31,9 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// What `/restart` can restart
 #[derive(Clone, Copy, Debug, ChoiceParameter)]
 enum Service {
-    #[name = "Jellyfin"]
+    #[name = "jellyfin"]
     Jellyfin,
-    #[name = "This bot"]
+    #[name = "discord bot"]
     Bot,
 }
 
