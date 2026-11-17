@@ -5,7 +5,9 @@
 //! New and available requests are posted in Discord ([`announce`]), and request posts are kept
 //! up to date as Seerr says their requests change. Seerr doesn't say when a show is partly
 //! downloaded or a download starts, so open requests' posts are also rebuilt every
-//! [`SWEEP_EVERY`], starting with those found in the admin channels at startup. Posts are only
+//! [`SWEEP_EVERY`], starting with those found in the admin channels at startup. Seerr doesn't
+//! resend a notification the bot missed (it was down, say), so each sweep also posts requests
+//! waiting for approval that have no post. Posts are only
 //! edited when they'd change: Discord allows only a few edits a minute to messages over an hour
 //! old.
 //!
@@ -42,6 +44,7 @@ use crate::{
     announce::{self, Event},
     commands::requests::{mark_gone, post_now, post_request},
     error::chain,
+    seerr::RequestStatus,
 };
 
 /// How often open requests' posts are rebuilt
@@ -50,6 +53,8 @@ const SWEEP_EVERY: Duration = Duration::from_secs(15 * 60);
 const HISTORY: usize = 1000;
 /// How many posts are rebuilt at once
 const SWEEP_AT_ONCE: usize = 4;
+/// How many of the newest requests are checked for a post each sweep
+const RECENT: usize = 25;
 
 /// The bound listener, waiting for the Discord connection before serving
 #[derive(Debug)]
@@ -305,10 +310,11 @@ impl Hook {
         Ok(guild)
     }
 
-    /// Finds the posts in the admin channels, then rebuilds open requests' posts every
-    /// [`SWEEP_EVERY`], forgetting the rest
+    /// Finds the posts in the admin channels, then every [`SWEEP_EVERY`] rebuilds open requests'
+    /// posts, forgetting the rest, and posts requests waiting for approval that have none
     async fn sweep(&self) {
-        self.find_posts().await;
+        // Without every channel searched, requests could be posted twice
+        let mut found = self.find_posts().await;
         let mut every = tokio::time::interval(SWEEP_EVERY);
         every.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -320,27 +326,69 @@ impl Hook {
                 .filter_map(|closed| async move { closed })
                 .collect()
                 .await;
-            let mut posts = self.posts.lock().unwrap();
-            for id in closed {
-                posts.remove(&id);
+            {
+                let mut posts = self.posts.lock().unwrap();
+                for id in closed {
+                    posts.remove(&id);
+                }
+            }
+            if !found {
+                found = self.find_posts().await;
+            }
+            if found {
+                self.catch_up().await;
             }
         }
     }
 
-    /// Adds the bot's posts in the last [`HISTORY`] messages of each admin channel
-    async fn find_posts(&self) {
+    /// Posts any of the newest [`RECENT`] requests that are waiting for approval and have no
+    /// post, like ones made while the bot was down
+    async fn catch_up(&self) {
+        let pending = match self
+            .data
+            .seerr
+            .requests(&self.data.http, "all", None, 0, RECENT)
+            .await
+        {
+            Ok(page) => page.requests,
+            Err(e) => {
+                warn!("Fetching the newest requests: {}", chain(&e));
+                return;
+            }
+        };
+        let missing: Vec<u32> = {
+            let posts = self.posts.lock().unwrap();
+            pending
+                .iter()
+                .filter(|r| r.status == RequestStatus::Pending)
+                .map(|r| r.id)
+                .filter(|id| !posts.contains_key(id))
+                .collect()
+        };
+        // Oldest first, so they're posted in the order they were made
+        for id in missing.into_iter().rev() {
+            info!("Posting request {id}, which has no post");
+            self.announce(Event::Requested, id).await;
+        }
+    }
+
+    /// Adds the bot's posts in the last [`HISTORY`] messages of each admin channel. Returns
+    /// whether every channel was searched.
+    async fn find_posts(&self) -> bool {
         let me = match self.discord.get_current_user().await {
             Ok(user) => user.id,
             Err(e) => {
                 warn!("Looking up the bot's own user: {e}");
-                return;
+                return false;
             }
         };
+        let mut all = true;
         for &channel in &self.data.channels.admin_channels {
             let found = match posts_in(&self.discord, channel, me).await {
                 Ok(found) => found,
                 Err(e) => {
                     warn!("Finding request posts in channel {channel}: {}", chain(&e));
+                    all = false;
                     continue;
                 }
             };
@@ -356,6 +404,7 @@ impl Hook {
             }
             drop((posts, shown));
         }
+        all
     }
 
     /// Posts `event` for request `id`, if it hasn't been already

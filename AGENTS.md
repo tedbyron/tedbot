@@ -119,9 +119,12 @@ store):
   `MEDIA_APPROVED`, `MEDIA_DECLINED`, `MEDIA_AVAILABLE` and `MEDIA_FAILED`, and
   every 15 minutes, since Seerr says nothing when a show is partly downloaded
   (`MEDIA_AVAILABLE` waits for every requested season) or a download starts.
-  Declined, completed and deleted requests are dropped. Posts are only edited
-  when what they show changed: Discord allows only a few edits a minute to
-  messages over an hour old.
+  Declined, completed and deleted requests are dropped. Seerr doesn't resend a
+  webhook that failed (the bot was down), so each sweep, the first right after
+  startup, posts any of the newest 25 requests that are pending with no post,
+  once every admin channel was searched. Posts are only edited when what they
+  show changed: Discord allows only a few edits a minute to messages over an
+  hour old.
 - **Available channel** (done): "now available" posts in each of
   `discord.available_channels` when Seerr's webhook sends `MEDIA_AVAILABLE`:
   poster, title, overview, the requested seasons that are available, and
