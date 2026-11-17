@@ -1,5 +1,6 @@
 //! Radarr and Sonarr API clients. Only the parts the bot uses: how far a request's download has
-//! got, and taking a cancelled request back out while it's still downloading.
+//! got, taking a cancelled request back out while it's still downloading, and clearing a
+//! replaced version's downloads.
 
 use std::collections::HashMap;
 
@@ -234,6 +235,42 @@ impl Arr {
         Ok(Removed::Done)
     }
 
+    /// Radarr: removes the movie with TMDB id `tmdb_id`'s downloads from the queue and the
+    /// download client, before it's deleted along with its files
+    pub async fn remove_movie_downloads(&self, http: &reqwest::Client, tmdb_id: u32) -> Result<()> {
+        let movies: Vec<Movie> = self.get(http, &format!("/movie?tmdbId={tmdb_id}")).await?;
+        for movie in movies {
+            let queue: Vec<QueueItem> = self
+                .get(http, &format!("/queue/details?movieId={}", movie.id))
+                .await?;
+            let ids = queue
+                .into_iter()
+                .filter(|q| q.movie_id == Some(movie.id))
+                .map(|q| q.id)
+                .collect();
+            self.remove_queued(http, ids).await?;
+        }
+        Ok(())
+    }
+
+    /// Sonarr: removes every download of the show with TVDB id `tvdb_id` from the queue and the
+    /// download client, before it's deleted along with its files
+    pub async fn remove_show_downloads(&self, http: &reqwest::Client, tvdb_id: u32) -> Result<()> {
+        let shows: Vec<Value> = self.get(http, &format!("/series?tvdbId={tvdb_id}")).await?;
+        for id in shows.iter().filter_map(|s| s["id"].as_u64()) {
+            let queue: Vec<QueueItem> = self
+                .get(http, &format!("/queue/details?seriesId={id}"))
+                .await?;
+            let ids = queue
+                .into_iter()
+                .filter(|q| q.series_id.map(u64::from) == Some(id))
+                .map(|q| q.id)
+                .collect();
+            self.remove_queued(http, ids).await?;
+        }
+        Ok(())
+    }
+
     /// Sonarr: stops `seasons` of the show with TVDB id `tvdb_id` downloading, unless any of
     /// their episodes have been downloaded already. Other seasons are left alone. If that leaves
     /// nothing monitored and no files, the show is removed altogether.
@@ -466,6 +503,39 @@ mod tests {
             assert_eq!(removed, Removed::Done);
             dequeued.assert_async().await;
             deleted.assert_async().await;
+        }
+
+        #[tokio::test]
+        async fn show_downloads_removed() {
+            let mut server = Server::new_async().await;
+            server
+                .mock("GET", "/api/v3/series")
+                .match_query(Matcher::UrlEncoded("tvdbId".into(), "1".into()))
+                .with_body(show(true).to_string())
+                .create_async()
+                .await;
+            server
+                .mock("GET", "/api/v3/queue/details")
+                .match_query(Matcher::UrlEncoded("seriesId".into(), "3".into()))
+                // Every season's, but not another show's
+                .with_body(
+                    r#"[{"id": 7, "seriesId": 3, "seasonNumber": 1},
+                        {"id": 8, "seriesId": 3, "seasonNumber": 2},
+                        {"id": 9, "seriesId": 4, "seasonNumber": 1}]"#,
+                )
+                .create_async()
+                .await;
+            let dequeued = server
+                .mock("DELETE", "/api/v3/queue/bulk")
+                .match_query(Matcher::Any)
+                .match_body(Matcher::Json(json!({"ids": [7, 8]})))
+                .create_async()
+                .await;
+            arr(&server)
+                .remove_show_downloads(&reqwest::Client::new(), 1)
+                .await
+                .unwrap();
+            dequeued.assert_async().await;
         }
 
         /// Sonarr's list of the show with TVDB id 1: season 1 monitored, season 2 as given

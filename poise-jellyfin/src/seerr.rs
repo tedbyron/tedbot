@@ -414,6 +414,8 @@ struct Season {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaInfo {
+    /// Seerr's id for it
+    pub id: Option<u32>,
     /// Shows only, once Seerr has looked it up
     pub tvdb_id: Option<u32>,
     status: Status,
@@ -651,6 +653,17 @@ impl Details {
             .iter()
             .filter(|s| s.season_number > 0)
             .map(|s| s.season_number)
+    }
+
+    /// Requests for the HD or 4K copy still open: waiting for approval or approved
+    pub fn open_requests(&self, is_4k: bool) -> impl Iterator<Item = &Request> {
+        self.media_info
+            .iter()
+            .flat_map(|m| &m.requests)
+            .filter(move |r| {
+                r.is_4k == is_4k
+                    && matches!(r.status, RequestStatus::Pending | RequestStatus::Approved)
+            })
     }
 
     /// Whether season `n` hasn't aired yet: TMDB lists it with no episodes
@@ -1192,6 +1205,27 @@ impl Seerr {
         .await
     }
 
+    /// Deletes the HD or 4K copy of Seerr media `media_id` from its Radarr or Sonarr, files
+    /// included (every season, for shows), and marks it deleted in Seerr
+    pub async fn delete_files(
+        &self,
+        http: &reqwest::Client,
+        media_id: u32,
+        is_4k: bool,
+    ) -> Result<Changed> {
+        let response = http
+            .delete(self.api(&format!("/media/{media_id}/file?is4k={is_4k}")))
+            .header("X-Api-Key", &self.api_key)
+            .send()
+            .await?;
+        changed(
+            response,
+            StatusCode::NO_CONTENT,
+            "Seerr refused to delete it",
+        )
+        .await
+    }
+
     /// Changes pending `request`'s quality profile and, for shows, seasons, as Seerr's admin, so
     /// the caller has to have checked who may. Everything else stays as it was.
     pub async fn edit(
@@ -1718,6 +1752,32 @@ mod tests {
             );
             let approved = seerr.review(&http, 3, true).await.unwrap();
             assert!(matches!(approved, Changed::Done));
+        }
+
+        #[tokio::test]
+        async fn files_deleted() {
+            let mut server = Server::new_async().await;
+            let deleted = server
+                .mock("DELETE", "/api/v1/media/3/file")
+                .match_query(Matcher::UrlEncoded("is4k".into(), "true".into()))
+                .match_header("X-Api-Key", Matcher::Any)
+                .with_status(204)
+                .create_async()
+                .await;
+            server
+                .mock("DELETE", "/api/v1/media/4/file")
+                .match_query(Matcher::Any)
+                .with_status(409)
+                .with_body(r#"{"message": "No 4K Radarr server configured to delete media files"}"#)
+                .create_async()
+                .await;
+            let seerr = seerr(&server);
+            let http = reqwest::Client::new();
+            let done = seerr.delete_files(&http, 3, true).await.unwrap();
+            assert!(matches!(done, Changed::Done));
+            deleted.assert_async().await;
+            let refused = seerr.delete_files(&http, 4, true).await.unwrap();
+            assert!(matches!(refused, Changed::Refused(m) if m.starts_with("No 4K Radarr")));
         }
 
         #[tokio::test]

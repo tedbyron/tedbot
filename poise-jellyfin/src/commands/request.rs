@@ -1075,7 +1075,7 @@ async fn try_cancel(
 }
 
 /// The Radarr or Sonarr that `media`'s HD or 4K copy goes to, if it's configured
-fn arr(data: &MediaServer, media: Media, is_4k: bool) -> Option<&Arr> {
+pub(super) fn arr(data: &MediaServer, media: Media, is_4k: bool) -> Option<&Arr> {
     match (media, is_4k) {
         (Media::Movie(_), false) => data.radarr.as_ref(),
         (Media::Tv(_), false) => data.sonarr.as_ref(),
@@ -1085,7 +1085,7 @@ fn arr(data: &MediaServer, media: Media, is_4k: bool) -> Option<&Arr> {
 }
 
 /// [`arr`]'s name, for errors
-const fn arr_name(media: Media, is_4k: bool) -> &'static str {
+pub(super) const fn arr_name(media: Media, is_4k: bool) -> &'static str {
     match (media, is_4k) {
         (Media::Movie(_), false) => "Radarr",
         (Media::Tv(_), false) => "Sonarr",

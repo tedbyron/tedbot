@@ -8,6 +8,8 @@
 //!
 //! New requests are also posted in `admin_channels` as the same card, made for
 //! admins ([`post_card`]). Those buttons work for as long as the post is there ([`post_press`]).
+//! Posts of a request whose title already has another version (HD or 4K), or for a movie, an
+//! earlier download of the same one, can approve it in place of that ([`Replaced`]).
 
 use std::{
     collections::HashMap,
@@ -42,7 +44,8 @@ use tracing::warn;
 use super::{
     defer, escape, in_guild, is_admin, is_admin_user, remove_buttons,
     request::{
-        can_unsend, cancel, check_partial, marker, ranges, request_download, status, truncate,
+        arr, arr_name, can_unsend, cancel, check_partial, marker, ranges, request_download, status,
+        truncate,
     },
     seerr_user,
 };
@@ -1025,6 +1028,14 @@ impl Screen {
                         .style(ButtonStyle::Success),
                 );
             }
+            // Posts only, since it asks to confirm in a message of its own
+            if let (None, Some(replaced)) = (position, Replaced::of(&details, &request)) {
+                buttons.push(
+                    button("replace")
+                        .label(format!("Approve, replace {}", replaced.version()))
+                        .style(ButtonStyle::Danger),
+                );
+            }
             buttons.push(
                 button("decline")
                     .label("Decline")
@@ -1531,12 +1542,48 @@ pub async fn post_press(
         return Ok(());
     }
 
+    // Opens the confirmation for replacing the other version, just for whoever pressed
+    if action == "replace" {
+        press
+            .create_response(
+                ctx,
+                CreateInteractionResponse::Defer(
+                    CreateInteractionResponseMessage::new().ephemeral(true),
+                ),
+            )
+            .await?;
+        let viewer = Viewer::post(ctx.http.clone(), press.guild_id);
+        let edit = match confirm_replace(data, &viewer, request, &id).await {
+            Ok(Some((embed, components))) => EditInteractionResponse::new()
+                .embed(embed)
+                .components(components),
+            Ok(None) => EditInteractionResponse::new().content(NOTHING_TO_REPLACE),
+            Err(e) => {
+                warn!("Loading request {request} to replace: {}", chain(&e));
+                EditInteractionResponse::new().content(UNREACHABLE)
+            }
+        };
+        press.edit_response(ctx, edit).await?;
+        return Ok(());
+    }
+
     // Acknowledge first: Seerr looks things up on TMDB, which may take longer than the 3 seconds
     // Discord allows before an interaction fails
     press
         .create_response(ctx, CreateInteractionResponse::Acknowledge)
         .await?;
     let viewer = Viewer::post(ctx.http.clone(), press.guild_id);
+
+    // Pressed on the replace confirmation, which then says how it went
+    if action == "replace-confirm" {
+        let content = replace(data, request).await;
+        let edit = EditInteractionResponse::new()
+            .content(content)
+            .embeds(vec![])
+            .components(vec![]);
+        press.edit_response(ctx, edit).await?;
+        return Ok(());
+    }
 
     // Pressed on the batch confirmation, which then says how it went
     if action == "approve-all" {
@@ -1611,6 +1658,210 @@ pub async fn post_press(
         press.create_followup(ctx, followup).await?;
     }
     Ok(())
+}
+
+/// Reply when a request has nothing to replace any more
+const NOTHING_TO_REPLACE: &str = "Nothing to replace now: it's been approved, declined or cancelled, or the other version's gone";
+
+/// What approving a pending request with Replace deletes first: for a movie downloaded already
+/// in the version requested, that download (so it's downloaded again, as the new request asks);
+/// else the other version (HD or 4K), as far as it's got
+struct Replaced<'a> {
+    /// The version that goes
+    is_4k: bool,
+    /// Where it stands
+    status: Status,
+    /// Whether it's in Radarr or Sonarr, so it has to come out of there (and its files with it)
+    sent: bool,
+    /// Its requests still open, cancelled along with it
+    requests: Vec<&'a Request>,
+}
+
+impl<'a> Replaced<'a> {
+    /// What approving pending `request` with Replace would delete, `None` if there's nothing
+    fn of(details: &'a Details, request: &Request) -> Option<Self> {
+        if request.status != RequestStatus::Pending {
+            return None;
+        }
+        let downloaded = |s| matches!(s, Status::Available | Status::PartiallyAvailable);
+        let same = request.seasons.is_empty() && downloaded(details.status_of(request.is_4k));
+        let is_4k = request.is_4k != !same;
+        let status = details.status_of(is_4k);
+        let requests: Vec<&Request> = details
+            .open_requests(is_4k)
+            .filter(|r| r.id != request.id)
+            .collect();
+        let sent = matches!(
+            status,
+            Status::Processing | Status::PartiallyAvailable | Status::Available
+        ) || requests.iter().any(|r| r.status == RequestStatus::Approved);
+        (sent || !requests.is_empty()).then_some(Self {
+            is_4k,
+            status,
+            sent,
+            requests,
+        })
+    }
+
+    /// "HD" or "4K"
+    const fn version(&self) -> &'static str {
+        if self.is_4k { "4K" } else { "HD" }
+    }
+}
+
+/// The confirmation for approving request `request` in place of what [`Replaced`] says it
+/// replaces, for admins. `None` if there's nothing to replace.
+async fn confirm_replace(
+    data: &MediaServer,
+    viewer: &Viewer,
+    request: u32,
+    id: &str,
+) -> Result<Option<(CreateEmbed, Vec<CreateActionRow>)>> {
+    let Some(request) = data.seerr.request_by_id(&data.http, request).await? else {
+        return Ok(None);
+    };
+    let Some(media) = request.media() else {
+        return Ok(None);
+    };
+    let details = data.seerr.details(&data.http, media).await?;
+    let Some(replaced) = Replaced::of(&details, &request) else {
+        return Ok(None);
+    };
+    let title = seerr::with_year(&details.title, details.release_date.as_deref());
+    let version = replaced.version();
+    let asked = if request.is_4k { "4K" } else { "HD" };
+    let who = match &request.requested_by {
+        Some(by) => format!("{}'s", viewer.name(data, by).await),
+        None => "the".into(),
+    };
+
+    let mut lines = vec![format!(
+        "Approves {who} request for **{}** in {asked}{} after:",
+        escape(&title),
+        seasons(&request, ", ")
+    )];
+    if replaced.sent {
+        let name = arr_name(media, replaced.is_4k);
+        let every = if matches!(media, Media::Tv(_)) {
+            ", every season"
+        } else {
+            ""
+        };
+        lines.push(
+            if matches!(
+                replaced.status,
+                Status::Available | Status::PartiallyAvailable
+            ) {
+                format!("- Deleting the {version} version from {name}, files included{every}")
+            } else {
+                format!("- Taking the {version} version out of {name}, downloads included{every}")
+            },
+        );
+    }
+    for r in &replaced.requests {
+        let whose = match &r.requested_by {
+            Some(by) => format!("{}'s", viewer.name(data, by).await),
+            None => "a".into(),
+        };
+        let state = if r.status == RequestStatus::Approved {
+            "approved"
+        } else {
+            "waiting"
+        };
+        lines.push(format!(
+            "- Cancelling {whose} {state} {version} request{}",
+            seasons(r, ", ")
+        ));
+    }
+    let embed = CreateEmbed::new()
+        .title(format!("Replace the {version} version?"))
+        .description(lines.join("\n"));
+    let button = CreateButton::new(format!("{id}-replace-confirm"))
+        .label(format!("Delete {version} and approve"))
+        .style(ButtonStyle::Danger);
+    Ok(Some((embed, vec![CreateActionRow::Buttons(vec![button])])))
+}
+
+/// Approves request `request` in place of what [`Replaced`] says it replaces, if it still does,
+/// returning what to tell the admin
+async fn replace(data: &MediaServer, request: u32) -> String {
+    match try_replace(data, request).await {
+        Ok(Some(title)) => format!("Replaced and approved **{}**", escape(&title)),
+        Ok(None) => NOTHING_TO_REPLACE.into(),
+        Err(Refused(message)) => message,
+        Err(Failed(e)) => {
+            warn!("Replacing for request {request}: {}", chain(&e));
+            "Couldn't replace it, try again in a bit \u{1fae4}".into()
+        }
+    }
+}
+
+/// Why [`try_replace`] stopped
+enum Stopped {
+    /// Seerr said no; the message is Seerr's
+    Refused(String),
+    Failed(Error),
+}
+use Stopped::{Failed, Refused};
+
+impl<E: Into<Error>> From<E> for Stopped {
+    fn from(e: E) -> Self {
+        Failed(e.into())
+    }
+}
+
+/// The steps of [`replace`]: the replaced version's downloads out of Radarr or Sonarr (if the bot
+/// can reach it) and then, through Seerr, the rest of it, files included; then its requests
+/// cancelled; then request `request` approved. Returns the title, `None` if there's nothing to
+/// replace any more.
+async fn try_replace(data: &MediaServer, request: u32) -> Result<Option<String>, Stopped> {
+    let Some(request) = data.seerr.request_by_id(&data.http, request).await? else {
+        return Ok(None);
+    };
+    let Some(media) = request.media() else {
+        return Ok(None);
+    };
+    let details = data.seerr.details(&data.http, media).await?;
+    let Some(replaced) = Replaced::of(&details, &request) else {
+        return Ok(None);
+    };
+    let info = details.media_info.as_ref();
+    let done = |changed| match changed {
+        Changed::Done => Ok(()),
+        Changed::Refused(message) => Err(Refused(message)),
+    };
+
+    if replaced.sent {
+        if let Some(arr) = arr(data, media, replaced.is_4k) {
+            let removed = match (media, info.and_then(|m| m.tvdb_id)) {
+                (Media::Movie(tmdb_id), _) => arr.remove_movie_downloads(&data.http, tmdb_id).await,
+                (Media::Tv(_), Some(tvdb_id)) => {
+                    arr.remove_show_downloads(&data.http, tvdb_id).await
+                }
+                (Media::Tv(_), None) => Ok(()),
+            };
+            removed.map_err(|e| Error::Arr {
+                service: arr_name(media, replaced.is_4k),
+                source: Box::new(e),
+            })?;
+        }
+        let media_id = info
+            .and_then(|m| m.id)
+            .ok_or_else(|| Error::seerr(format!("{media} has no Seerr id")))?;
+        done(
+            data.seerr
+                .delete_files(&data.http, media_id, replaced.is_4k)
+                .await?,
+        )?;
+    }
+    for r in &replaced.requests {
+        done(data.seerr.cancel(&data.http, None, r.id).await?)?;
+    }
+    done(data.seerr.review(&data.http, request.id, true).await?)?;
+    Ok(Some(seerr::with_year(
+        &details.title,
+        details.release_date.as_deref(),
+    )))
 }
 
 /// Approves `batch`, requests by id with their titles, one at a time. Returns which couldn't be
@@ -1755,5 +2006,46 @@ mod tests {
         assert_eq!(ids(4), [4]);
         assert_eq!(ids(5), [5]);
         assert!(ids(9).is_empty());
+    }
+
+    #[test]
+    fn replaces() {
+        let movie = |status: u8, status_4k: u8, requests: &str| -> Details {
+            serde_json::from_str(&format!(
+                r#"{{"title": "Movie", "mediaInfo": {{"id": 3, "status": {status},
+                    "status4k": {status_4k}, "requests": [{requests}]}}}}"#
+            ))
+            .unwrap()
+        };
+        let request = |id: u32, status: u8, is_4k: bool| -> Request {
+            serde_json::from_str(&format!(
+                r#"{{"id": {id}, "status": {status}, "is4k": {is_4k}}}"#
+            ))
+            .unwrap()
+        };
+        let what = |details: &Details, request: &Request| {
+            Replaced::of(details, request).map(|r| {
+                (
+                    r.is_4k,
+                    r.sent,
+                    r.requests.iter().map(|r| r.id).collect::<Vec<_>>(),
+                )
+            })
+        };
+        let hd = request(441, 1, false);
+
+        // HD asked for while 4K is downloaded: the 4K copy goes
+        let uhd_downloaded = movie(2, 5, r#"{"id": 417, "status": 5, "is4k": true}"#);
+        assert_eq!(what(&uhd_downloaded, &hd), Some((true, true, vec![])));
+        // HD downloaded already too: that goes instead, to download it again
+        let both = movie(5, 5, "");
+        assert_eq!(what(&both, &hd), Some((false, true, vec![])));
+        // 4K only waiting for approval: its request is cancelled, nothing deleted
+        let uhd_waiting = movie(2, 2, r#"{"id": 9, "status": 1, "is4k": true}"#);
+        assert_eq!(what(&uhd_waiting, &hd), Some((true, false, vec![9])));
+        // Nothing else
+        assert_eq!(what(&movie(2, 1, ""), &hd), None);
+        // Not pending
+        assert_eq!(what(&uhd_downloaded, &request(441, 2, false)), None);
     }
 }

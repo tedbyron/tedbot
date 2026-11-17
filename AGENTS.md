@@ -104,17 +104,24 @@ store):
   sees it (`requests::post_card`), without the list buttons but with 🔄 and a
   Seerr link button instead of a linked title: Approve, Approve all N (its
   confirmation is ephemeral), Decline, season and quality menus, or Cancel
-  request. Anyone sees the buttons, so presses are checked with `is_admin_user`,
-  except 🔄. The buttons have to outlive any command, so presses come through
-  poise's `event_handler` (`requests::post_press`), with custom ids
-  `request-post:<id>-<action>`. Nobody is pinged (no allowed mentions). The
-  webhook keeps each open request's posts, found in the channels' last 1000
-  messages at startup, and rebuilds them on `MEDIA_APPROVED`, `MEDIA_DECLINED`,
-  `MEDIA_AVAILABLE` and `MEDIA_FAILED`, and every 15 minutes, since Seerr says
-  nothing when a show is partly downloaded (`MEDIA_AVAILABLE` waits for every
-  requested season) or a download starts. Declined, completed and deleted
-  requests are dropped. Posts are only edited when what they show changed:
-  Discord allows only a few edits a minute to messages over an hour old.
+  request. "Approve, replace HD/4K" (`requests::Replaced`, ephemeral
+  confirmation listing what goes) shows when the title has another version, or
+  for a movie the same version is downloaded already (Seerr allows a new request
+  once the old one's completed): that version's queue items are removed through
+  Radarr/Sonarr, then Seerr's `DELETE /media/{id}/file?is4k=` deletes it with
+  its files (a show's whole series) and marks it deleted, its open requests are
+  cancelled, and the new request is approved. Anyone sees the buttons, so
+  presses are checked with `is_admin_user`, except 🔄. The buttons have to
+  outlive any command, so presses come through poise's `event_handler`
+  (`requests::post_press`), with custom ids `request-post:<id>-<action>`. Nobody
+  is pinged (no allowed mentions). The webhook keeps each open request's posts,
+  found in the channels' last 1000 messages at startup, and rebuilds them on
+  `MEDIA_APPROVED`, `MEDIA_DECLINED`, `MEDIA_AVAILABLE` and `MEDIA_FAILED`, and
+  every 15 minutes, since Seerr says nothing when a show is partly downloaded
+  (`MEDIA_AVAILABLE` waits for every requested season) or a download starts.
+  Declined, completed and deleted requests are dropped. Posts are only edited
+  when what they show changed: Discord allows only a few edits a minute to
+  messages over an hour old.
 - **Available channel** (done): "now available" posts in each of
   `discord.available_channels` when Seerr's webhook sends `MEDIA_AVAILABLE`:
   poster, title, overview, the requested seasons that are available, and
