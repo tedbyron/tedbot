@@ -3,12 +3,11 @@
 
 [discord]
 token = ''
-# User ids of the bot's admins, in every server. They're pinged for requests waiting for approval.
+# User ids of the bot's admins, in every server.
 # admins = ['123456789012345678']
 
 # Channels for admins. New requests are posted here with buttons to approve
-# them (needs [seerr.webhook]; admins are pinged for ones waiting for
-# approval), and Jellyfin accounts being disabled (by an admin or after too
+# them (needs [seerr.webhook]), and Jellyfin accounts being disabled (by an admin or after too
 # many failed sign-ins) or enabled again, checked every 15 minutes.
 # admin_channels = ['123456789012345678']
 # Channels to post in when a request is available in Jellyfin (needs

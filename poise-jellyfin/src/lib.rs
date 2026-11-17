@@ -97,8 +97,7 @@ pub struct Shared {
 impl MediaServer {
     /// Connects to nothing yet; services are asked as commands need them. `channels` are where
     /// requests and account changes are posted. `admins` can restart
-    /// services, approve and cancel anyone's requests, and see what's streaming, and are pinged
-    /// for requests waiting for approval. Give `http` a timeout: requests wait as long as it
+    /// services, approve and cancel anyone's requests, and see what's streaming. Give `http` a timeout: requests wait as long as it
     /// allows. `/restart` only offers to restart the bot with `restart_bot`. Fails if an API key
     /// is empty or the restart command is.
     pub fn new(

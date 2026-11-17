@@ -109,7 +109,6 @@ impl Listener {
     }
 
     /// Serves in the background for as long as the bot runs. Call it once Discord is connected.
-    /// `data`'s admins are pinged for requests waiting for approval.
     pub fn spawn(self, discord: Arc<Http>, data: MediaServer) {
         let hook = Arc::new(Hook {
             discord,

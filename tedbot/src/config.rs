@@ -25,8 +25,7 @@ pub struct Config {
 pub struct DiscordConfig {
     /// Bot token from the Discord developer portal
     pub token: String,
-    /// User ids of the media server's admins, in every server, pinged for requests waiting for
-    /// approval in servers they're in. Without any nobody is an admin.
+    /// User ids of the media server's admins, in every server. Without any nobody is an admin.
     #[serde(default)]
     pub admins: Vec<UserId>,
     /// Optional Discord activity

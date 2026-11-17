@@ -107,8 +107,7 @@ store):
   request. Anyone sees the buttons, so presses are checked with `is_admin_user`,
   except 🔄. The buttons have to outlive any command, so presses come through
   poise's `event_handler` (`requests::post_press`), with custom ids
-  `request-post:<id>-<action>`. `discord.admins` who are in the channel's server
-  are pinged for requests waiting for approval (the only allowed mentions). The
+  `request-post:<id>-<action>`. Nobody is pinged (no allowed mentions). The
   webhook keeps each open request's posts, found in the channels' last 1000
   messages at startup, and rebuilds them on `MEDIA_APPROVED`, `MEDIA_DECLINED`,
   `MEDIA_AVAILABLE` and `MEDIA_FAILED`, and every 15 minutes, since Seerr says

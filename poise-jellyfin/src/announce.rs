@@ -17,7 +17,7 @@ use crate::{
         requests::post_card,
     },
     error::chain,
-    seerr::{self, Request, RequestStatus, Status},
+    seerr::{self, Request, Status},
 };
 
 /// TMDB image URL prefix for posters, 342 pixels wide
@@ -58,29 +58,14 @@ pub async fn post(
     let mut posts = Vec::new();
     match event {
         Event::Requested => {
-            // Only requests waiting for approval need an admin, pinged where they're in the
-            // channel's server
-            let pending = request.status == RequestStatus::Pending;
             for &channel in &targets.admin_channels {
                 let guild = guild(discord, channel).await;
-                let mut ping = Vec::new();
-                if let Some(guild) = guild.filter(|_| pending) {
-                    for &admin in &data.admins {
-                        if guild.member(discord, admin).await.is_ok() {
-                            ping.push(admin);
-                        }
-                    }
-                }
                 let (embed, components) =
                     post_card(data, discord.clone(), guild, request.clone()).await?;
-                let mut message = CreateMessage::new()
+                let message = CreateMessage::new()
                     .embed(embed)
                     .components(components)
-                    .allowed_mentions(CreateAllowedMentions::new().users(ping.iter().copied()));
-                if !ping.is_empty() {
-                    let mentions: Vec<_> = ping.iter().map(|u| u.mention().to_string()).collect();
-                    message = message.content(mentions.join(" "));
-                }
+                    .allowed_mentions(CreateAllowedMentions::new());
                 send(discord, channel, message, &mut posts).await;
             }
         }
