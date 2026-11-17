@@ -32,7 +32,7 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(14 * 60);
 /// Discord allows at most 25 fields per embed
 const MAX_FIELDS: usize = 25;
 
-/// Who's streaming from the Jellyfin server
+/// who's streaming
 #[command(check = "super::linked", slash_command)]
 pub async fn streams<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<(), E> {
     streams_run(ctx).await.map_err(E::from)

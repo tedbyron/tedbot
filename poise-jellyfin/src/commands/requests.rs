@@ -109,7 +109,7 @@ impl Filter {
     }
 }
 
-/// See your recent requests
+/// see your recent requests
 #[command(check = "super::linked", slash_command)]
 pub async fn requests<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,

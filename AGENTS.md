@@ -271,6 +271,13 @@ store):
   member lookups and refetches who linked what in Seerr
   (`Seerr::refresh_links`), so a newly linked account shows as a mention without
   a restart, and says how many Seerr users have one linked.
+- **`/help`** (done): an embed listing every registered slash command but
+  itself, one line each: `` `/name <required> [optional]` `` and the second
+  paragraph of its doc comment (poise's `help_text`, one sentence), else its
+  description. Only those the invoker can use there (`help::usable`): commands
+  with `default_member_permissions` only for `is_admin`, none that are
+  `guild_only` in DMs, and poise's `owners_only`, `dm_only` and
+  `required_permissions` respected.
 - Every command reply is ephemeral in servers but not in DMs with the bot, where
   ephemeral ones vanish on reload (`commands::in_guild`), as are follow-ups to
   button presses. Commands defer first with `commands::defer`, so whatever they

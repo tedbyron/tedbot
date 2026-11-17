@@ -40,7 +40,7 @@ const KEYPAD_MAX: usize = 12;
 /// Channels per page of the channel list. Discord allows at most 25 fields per embed.
 const PAGE_SIZE: usize = 12;
 
-/// What's on live TV right now
+/// what's on live tv
 #[command(check = "super::linked", slash_command)]
 pub async fn tv<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,

@@ -60,7 +60,7 @@ impl Service {
     }
 }
 
-/// Restart a media server service
+/// restart a media server service
 #[command(
     check = "super::linked",
     slash_command,

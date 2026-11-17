@@ -210,6 +210,7 @@ type Context<'a, U, E> = poise::Context<'a, U, E>;
 /// Every command, for `FrameworkOptions::commands`
 pub fn commands<U: Data, E: From<Error> + Send + Sync + 'static>() -> Vec<poise::Command<U, E>> {
     vec![
+        commands::help::help(),
         commands::refresh_users::refresh_users(),
         commands::request::request(),
         commands::requests::requests(),

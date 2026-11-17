@@ -9,7 +9,7 @@ use tracing::{info, warn};
 use super::{defer, is_admin};
 use crate::{Context, Data, Error, Result, error::chain};
 
-/// Find Discord accounts newly linked in Seerr
+/// refresh discord accounts linked in seerr
 #[command(
     check = "super::linked",
     slash_command,

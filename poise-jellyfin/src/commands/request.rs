@@ -51,7 +51,7 @@ const MAX_ROWS: usize = 5;
 /// Reply when Seerr can't be reached
 const UNREACHABLE: &str = "Couldn't reach Seerr, try again in a bit \u{1fae4}";
 
-/// Request a movie or show
+/// request a movie or show
 #[command(check = "super::linked", slash_command)]
 pub async fn request<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
