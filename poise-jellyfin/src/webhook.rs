@@ -6,10 +6,9 @@
 //! up to date as Seerr says their requests change. Seerr doesn't say when a show is partly
 //! downloaded or a download starts, so open requests' posts are also rebuilt every
 //! [`SWEEP_EVERY`], starting with those found in the admin channels at startup. Seerr doesn't
-//! resend a notification the bot missed (it was down, say), so each sweep also posts requests
-//! waiting for approval that have no post. Posts are only
-//! edited when they'd change: Discord allows only a few edits a minute to messages over an hour
-//! old.
+//! resend a notification the bot missed (it was down, say), so each sweep also posts open requests
+//! (waiting for approval, or approved but not downloaded) that have no post. Posts are only edited
+//! when they'd change: Discord allows only a few edits a minute to messages over an hour old.
 //!
 //! Listens on localhost only. Point Seerr's webhook URL at `http://localhost:<port>/seerr`.
 //! `GET /health` answers 200, for uptime probes; it's only served once Discord is connected.
@@ -311,7 +310,7 @@ impl Hook {
     }
 
     /// Finds the posts in the admin channels, then every [`SWEEP_EVERY`] rebuilds open requests'
-    /// posts, forgetting the rest, and posts requests waiting for approval that have none
+    /// posts, forgetting the rest, and posts open requests that have none
     async fn sweep(&self) {
         // Without every channel searched, requests could be posted twice
         let mut found = self.find_posts().await;
@@ -341,10 +340,11 @@ impl Hook {
         }
     }
 
-    /// Posts any of the newest [`RECENT`] requests that are waiting for approval and have no
-    /// post, like ones made while the bot was down
+    /// Posts any of the newest [`RECENT`] requests that are waiting for approval, or approved but
+    /// not downloaded, and have no post, like ones made (and maybe approved) while the bot was
+    /// down
     async fn catch_up(&self) {
-        let pending = match self
+        let open = match self
             .data
             .seerr
             .requests(&self.data.http, "all", None, 0, RECENT)
@@ -358,9 +358,8 @@ impl Hook {
         };
         let missing: Vec<u32> = {
             let posts = self.posts.lock().unwrap();
-            pending
-                .iter()
-                .filter(|r| r.status == RequestStatus::Pending)
+            open.iter()
+                .filter(|r| matches!(r.status, RequestStatus::Pending | RequestStatus::Approved))
                 .map(|r| r.id)
                 .filter(|id| !posts.contains_key(id))
                 .collect()

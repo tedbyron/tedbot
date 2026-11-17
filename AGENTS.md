@@ -121,7 +121,8 @@ store):
   (`MEDIA_AVAILABLE` waits for every requested season) or a download starts.
   Declined, completed and deleted requests are dropped. Seerr doesn't resend a
   webhook that failed (the bot was down), so each sweep, the first right after
-  startup, posts any of the newest 25 requests that are pending with no post,
+  startup, posts any of the newest 25 requests that are pending, or approved but
+  not downloaded (Seerr completes a request once it's all there), with no post,
   once every admin channel was searched. Posts are only edited when what they
   show changed: Discord allows only a few edits a minute to messages over an
   hour old.
