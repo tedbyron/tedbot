@@ -40,7 +40,7 @@ use tokio::sync::OnceCell;
 use tracing::warn;
 
 use super::{
-    escape, is_admin, is_admin_user, remove_buttons,
+    defer, escape, in_guild, is_admin, is_admin_user, remove_buttons,
     request::{can_unsend, cancel, check_partial, ranges, request_download, status, truncate},
     seerr_user,
 };
@@ -110,7 +110,7 @@ impl Filter {
 }
 
 /// See your recent requests
-#[command(check = "super::linked", slash_command, ephemeral)]
+#[command(check = "super::linked", slash_command)]
 pub async fn requests<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     #[description = "Only requests that are"] status: Option<Filter>,
@@ -123,7 +123,7 @@ async fn requests_run<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     status: Option<Filter>,
 ) -> Result<()> {
-    ctx.defer_ephemeral().await?;
+    defer(ctx).await?;
 
     let data = ctx.data().server();
     let user = seerr_user(ctx).await?;
@@ -286,7 +286,7 @@ async fn requests_run<U: Data, E: From<Error>>(
         if let Some(notice) = notice {
             CreateInteractionResponseFollowup::new()
                 .content(notice)
-                .ephemeral(true)
+                .ephemeral(in_guild(ctx))
                 .execute(ctx, (None, &token))
                 .await?;
         }

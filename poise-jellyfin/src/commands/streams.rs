@@ -17,7 +17,7 @@ use poise::{
 };
 use tracing::warn;
 
-use super::{escape, is_admin, remove_buttons};
+use super::{defer, escape, in_guild, is_admin, remove_buttons};
 use crate::{
     Context, Data, Error, Result,
     error::chain,
@@ -33,14 +33,14 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(14 * 60);
 const MAX_FIELDS: usize = 25;
 
 /// Who's streaming from the Jellyfin server
-#[command(check = "super::linked", slash_command, ephemeral)]
+#[command(check = "super::linked", slash_command)]
 pub async fn streams<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<(), E> {
     streams_run(ctx).await.map_err(E::from)
 }
 
 /// [`streams()`], failing with [`Error`](crate::Error)
 async fn streams_run<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<()> {
-    ctx.defer_ephemeral().await?;
+    defer(ctx).await?;
 
     let admin = is_admin(ctx);
     let refresh = CreateActionRow::Buttons(vec![
@@ -76,7 +76,7 @@ async fn streams_run<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<
                 warn!("Refreshing sessions: {}", chain(&e));
                 CreateInteractionResponseFollowup::new()
                     .content("Couldn't reach Jellyfin, try again in a bit \u{1fae4}")
-                    .ephemeral(true)
+                    .ephemeral(in_guild(ctx))
                     .execute(ctx, (None, &press.token))
                     .await?;
             }

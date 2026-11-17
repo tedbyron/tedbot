@@ -42,14 +42,36 @@ async fn linked<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<bool,
                     url.trim_end_matches('/')
                 );
             }
-            ctx.send(CreateReply::default().ephemeral(true).content(content))
-                .await
-                .map_err(Error::from)?;
+            ctx.send(
+                CreateReply::default()
+                    .ephemeral(in_guild(ctx))
+                    .content(content),
+            )
+            .await
+            .map_err(Error::from)?;
         }
         return Ok(false);
     };
     ctx.set_invocation_data(user).await;
     Ok(true)
+}
+
+/// Whether the command was run in a server rather than a DM. Replies there are ephemeral, only for
+/// the invoker; in DMs with the bot nobody else sees them anyway, and ephemeral ones would vanish
+/// when Discord reloads.
+fn in_guild<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> bool {
+    ctx.guild_id().is_some()
+}
+
+/// Defers the command's reply, ephemeral if [`in_guild`]. Whatever's sent next replaces it,
+/// so commands that defer first can `ctx.say` without picking.
+async fn defer<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<()> {
+    if in_guild(ctx) {
+        ctx.defer_ephemeral().await?;
+    } else {
+        ctx.defer().await?;
+    }
+    Ok(())
 }
 
 /// The invoker's Seerr user, as found by [`linked`], which only lets linked users through. Missing

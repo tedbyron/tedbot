@@ -271,8 +271,11 @@ store):
   member lookups and refetches who linked what in Seerr
   (`Seerr::refresh_links`), so a newly linked account shows as a mention without
   a restart, and says how many Seerr users have one linked.
-- Every command reply is ephemeral (`ephemeral` on each `#[command]`, so
-  `ctx.say`/`ctx.send` default to it), as are follow-ups to button presses.
+- Every command reply is ephemeral in servers but not in DMs with the bot, where
+  ephemeral ones vanish on reload (`commands::in_guild`), as are follow-ups to
+  button presses. Commands defer first with `commands::defer`, so whatever they
+  send next takes its ephemerality; `/restart` is server-only and always
+  ephemeral. Request posts' ephemeral replies are always in servers.
 - **Bot metrics**: expose a Prometheus `/metrics` endpoint from the bot (bound
   to localhost, port set in config) with things like commands run per command,
   command errors, latency, gateway status/heartbeat latency, and upstream

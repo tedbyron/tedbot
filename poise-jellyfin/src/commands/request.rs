@@ -25,7 +25,7 @@ use poise::{
 };
 use tracing::warn;
 
-use super::{escape, is_admin, remove_buttons, requests::profiles, seerr_user};
+use super::{defer, escape, in_guild, is_admin, remove_buttons, requests::profiles, seerr_user};
 use crate::{
     Context, Data, Error, MediaServer, Result,
     arr::{Arr, Download, Removed},
@@ -52,7 +52,7 @@ const MAX_ROWS: usize = 5;
 const UNREACHABLE: &str = "Couldn't reach Seerr, try again in a bit \u{1fae4}";
 
 /// Request a movie or show
-#[command(check = "super::linked", slash_command, ephemeral)]
+#[command(check = "super::linked", slash_command)]
 pub async fn request<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     #[description = "Movie or show title"]
@@ -64,7 +64,7 @@ pub async fn request<U: Data, E: From<Error>>(
 
 /// [`request()`], failing with [`Error`](crate::Error)
 async fn request_run<U: Data, E: From<Error>>(ctx: Context<'_, U, E>, title: String) -> Result<()> {
-    ctx.defer_ephemeral().await?;
+    defer(ctx).await?;
 
     let data = ctx.data().server();
     let user = seerr_user(ctx).await?;
@@ -175,7 +175,7 @@ async fn request_run<U: Data, E: From<Error>>(ctx: Context<'_, U, E>, title: Str
         if let Some(notice) = notice {
             CreateInteractionResponseFollowup::new()
                 .content(notice)
-                .ephemeral(true)
+                .ephemeral(in_guild(ctx))
                 .execute(ctx, (None, &token))
                 .await?;
         }

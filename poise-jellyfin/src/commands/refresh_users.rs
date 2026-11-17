@@ -6,7 +6,7 @@
 use poise::command;
 use tracing::{info, warn};
 
-use super::is_admin;
+use super::{defer, is_admin};
 use crate::{Context, Data, Error, Result, error::chain};
 
 /// Find Discord accounts newly linked in Seerr
@@ -14,7 +14,6 @@ use crate::{Context, Data, Error, Result, error::chain};
     check = "super::linked",
     slash_command,
     rename = "refresh-users",
-    ephemeral,
     default_member_permissions = "ADMINISTRATOR"
 )]
 pub async fn refresh_users<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<(), E> {
@@ -23,11 +22,11 @@ pub async fn refresh_users<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> R
 
 /// [`refresh_users()`], failing with [`Error`](crate::Error)
 async fn refresh_users_run<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> Result<()> {
+    defer(ctx).await?;
     if !is_admin(ctx) {
         ctx.say("Only admins can refresh users").await?;
         return Ok(());
     }
-    ctx.defer_ephemeral().await?;
     let data = ctx.data().server();
     data.members.clear();
     let reply = match data.seerr.refresh_links(&data.http).await {

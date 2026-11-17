@@ -20,7 +20,7 @@ use poise::{
 };
 use tracing::warn;
 
-use super::{escape, remove_buttons};
+use super::{defer, escape, in_guild, remove_buttons};
 use crate::{
     Context, Data, Error, MediaServer, Result,
     error::chain,
@@ -41,7 +41,7 @@ const KEYPAD_MAX: usize = 12;
 const PAGE_SIZE: usize = 12;
 
 /// What's on live TV right now
-#[command(check = "super::linked", slash_command, ephemeral)]
+#[command(check = "super::linked", slash_command)]
 pub async fn tv<U: Data, E: From<Error>>(
     ctx: Context<'_, U, E>,
     #[description = "Channel number or name"]
@@ -117,7 +117,7 @@ async fn navigate<U: Data, E: From<Error>>(
     mode: Mode,
     query: Option<String>,
 ) -> Result<()> {
-    ctx.defer_ephemeral().await?;
+    defer(ctx).await?;
 
     let data = ctx.data().server();
     let id = ctx.id().to_string();
@@ -208,7 +208,7 @@ async fn navigate<U: Data, E: From<Error>>(
         };
         CreateInteractionResponseFollowup::new()
             .content(notice)
-            .ephemeral(true)
+            .ephemeral(in_guild(ctx))
             .execute(ctx, (None, &token))
             .await?;
     }

@@ -113,13 +113,20 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-/// Logs the error and tells the user something went wrong, visible only to them. Error details
-/// stay in the log.
+/// Logs the error and tells the user something went wrong, visible only to them in servers. Error
+/// details stay in the log.
 async fn on_error(err: FrameworkError<'_>) {
-    let reply = |content| CreateReply::default().ephemeral(true).content(content);
+    let reply = |ctx: Context<'_>, content| {
+        CreateReply::default()
+            .ephemeral(ctx.guild_id().is_some())
+            .content(content)
+    };
     if let poise::FrameworkError::Command { error, ctx, .. } = err {
         error!("{error:#}");
-        drop(ctx.send(reply("Error executing command \u{1fae4}")).await);
+        drop(
+            ctx.send(reply(ctx, "Error executing command \u{1fae4}"))
+                .await,
+        );
     } else if let poise::FrameworkError::CommandCheckFailed {
         error: None, ctx, ..
     } = err
@@ -132,7 +139,7 @@ async fn on_error(err: FrameworkError<'_>) {
     } else {
         error!("{err}");
         if let Some(ctx) = err.ctx() {
-            drop(ctx.send(reply("An error occurred \u{1fae4}")).await);
+            drop(ctx.send(reply(ctx, "An error occurred \u{1fae4}")).await);
         }
     }
 }
