@@ -41,7 +41,9 @@ use tracing::warn;
 
 use super::{
     defer, escape, in_guild, is_admin, is_admin_user, remove_buttons,
-    request::{can_unsend, cancel, check_partial, ranges, request_download, status, truncate},
+    request::{
+        can_unsend, cancel, check_partial, marker, ranges, request_download, status, truncate,
+    },
     seerr_user,
 };
 use crate::{
@@ -849,6 +851,25 @@ impl Screen {
         }
         let download = request_download(data, &request, &details).await;
         embed = embed.field("Status", label(&request, Some(&details), download), false);
+        // Posts are colored like `/request` cards: yellow waiting, blue approved, green
+        // downloaded, and red declined or failed
+        if position.is_none() {
+            let progress = match request.status {
+                RequestStatus::Pending => Some(Status::Pending),
+                RequestStatus::Approved | RequestStatus::Completed => {
+                    match details.request_status(&request) {
+                        s @ (Status::Available | Status::PartiallyAvailable) => Some(s),
+                        // Deleted since
+                        Status::Missing if request.status == RequestStatus::Completed => None,
+                        _ => Some(Status::Processing),
+                    }
+                }
+                RequestStatus::Declined | RequestStatus::Failed => Some(Status::Blocklisted),
+            };
+            if let Some((colour, _)) = progress.and_then(marker) {
+                embed = embed.colour(colour);
+            }
+        }
         if !request.seasons.is_empty() {
             embed = embed.field("Seasons", ranges(&request.season_numbers()), true);
         }

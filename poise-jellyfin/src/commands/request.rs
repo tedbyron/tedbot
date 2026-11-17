@@ -16,7 +16,7 @@ use std::{collections::HashMap, time::Duration};
 use poise::{
     CreateReply, command,
     serenity_prelude::{
-        AutocompleteChoice, Builder as _, ButtonStyle, ComponentInteractionCollector,
+        AutocompleteChoice, Builder as _, ButtonStyle, Colour, ComponentInteractionCollector,
         ComponentInteractionDataKind, CreateActionRow, CreateAutocompleteResponse, CreateButton,
         CreateEmbed, CreateEmbedFooter, CreateInteractionResponse,
         CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateSelectMenu,
@@ -309,8 +309,11 @@ struct Card {
     count: usize,
     /// The HD and 4K versions
     versions: [Version; 2],
-    /// Seasons picked in the menu. Empty means all of each version's open seasons.
+    /// Seasons picked in the menu. Empty means all of each version's open seasons that have
+    /// aired, or if none have, its open ones that haven't.
     picked: Vec<u32>,
+    /// Seasons that haven't aired yet
+    upcoming: Vec<u32>,
     /// Qualities to pick from, empty if the invoker may not
     qualities: Vec<Quality>,
     /// Index of the quality picked in the menu, `None` for Seerr's choice
@@ -343,9 +346,6 @@ impl Card {
         let mut embed = CreateEmbed::new().title(&title);
         if let Some(url) = data.seerr.page(media) {
             embed = embed.url(url);
-        }
-        if let Some(overview) = details.overview.as_deref().filter(|o| !o.is_empty()) {
-            embed = embed.description(truncate(overview, OVERVIEW_MAX));
         }
         if let Some(path) = &details.poster_path {
             embed = embed.thumbnail(format!("{POSTER_URL}{path}"));
@@ -382,17 +382,34 @@ impl Card {
             )
         };
 
+        // Where it stands, at the top in bold and as the embed's color, both left out if
+        // nothing's been requested
+        let statuses: Vec<Status> = [false, true]
+            .into_iter()
+            .flat_map(|is_4k| keys.iter().map(move |&n| (n, is_4k)))
+            .map(|(n, is_4k)| status_of(n, is_4k))
+            .collect();
+        let mut status_lines = Vec::new();
         let (kind, open) = match media {
             Media::Movie(_) => {
                 let (hd, uhd) = (status_of(None, false), status_of(None, true));
                 let (hd_label, uhd_label) = (label(None, false), label(None, true));
-                let text = match (hd, uhd) {
-                    (_, Status::Missing) => hd_label.to_owned(),
-                    (Status::Missing, _) => format!("{uhd_label} in 4K"),
-                    _ if hd_label == uhd_label => format!("{hd_label} in HD and 4K"),
-                    _ => format!("{hd_label}\n{uhd_label} in 4K"),
-                };
-                embed = embed.field("Status", text, false);
+                let line = |s, text: String| marker(s).map(|(_, dot)| format!("### {dot} {text}"));
+                status_lines.extend(
+                    match (hd, uhd) {
+                        (_, Status::Missing) => [line(hd, hd_label.into()), None],
+                        (Status::Missing, _) => [line(uhd, format!("{uhd_label} in 4K")), None],
+                        _ if hd_label == uhd_label => {
+                            [line(hd, format!("{hd_label} in HD and 4K")), None]
+                        }
+                        _ => [
+                            line(hd, hd_label.into()),
+                            line(uhd, format!("{uhd_label} in 4K")),
+                        ],
+                    }
+                    .into_iter()
+                    .flatten(),
+                );
                 let open_4k = can_4k && !blocked && uhd == Status::Missing;
                 (
                     "Movie",
@@ -406,14 +423,8 @@ impl Card {
                         .map(|&n| (n, label(Some(n), is_4k), status_of(Some(n), is_4k)))
                         .collect()
                 };
-                embed = embed.field("Seasons", season_lines(&lines(false)), false);
-                let known_4k: Vec<_> = lines(true)
-                    .into_iter()
-                    .filter(|&(.., s)| s != Status::Missing)
-                    .collect();
-                if !known_4k.is_empty() {
-                    embed = embed.field("4K seasons", season_lines(&known_4k), false);
-                }
+                status_lines.extend(season_lines(&lines(false), ""));
+                status_lines.extend(season_lines(&lines(true), " in 4K"));
                 let open = |is_4k| -> Vec<u32> {
                     numbers
                         .iter()
@@ -433,6 +444,30 @@ impl Card {
                 )
             }
         };
+
+        let overview = details
+            .overview
+            .as_deref()
+            .filter(|o| !o.is_empty())
+            .map(|o| truncate(o, OVERVIEW_MAX));
+        let description: Vec<String> = [
+            (!status_lines.is_empty()).then(|| status_lines.join("\n")),
+            overview,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !description.is_empty() {
+            embed = embed.description(description.join("\n\n"));
+        }
+        if let Some((colour, _)) = statuses
+            .iter()
+            .copied()
+            .max_by_key(|&s| progress(s))
+            .and_then(marker)
+        {
+            embed = embed.colour(colour);
+        }
 
         let cancellable = details.cancellable(Some(viewer.user.id), viewer.admin);
         let versions = open.map(|(requestable, open)| Version {
@@ -504,6 +539,11 @@ impl Card {
             count: results.len(),
             versions,
             picked: Vec::new(),
+            upcoming: numbers
+                .iter()
+                .copied()
+                .filter(|&n| details.upcoming(n))
+                .collect(),
             qualities,
             quality: None,
             can_bypass: limited && viewer.user.can_bypass_quota(),
@@ -513,11 +553,20 @@ impl Card {
     }
 
     /// The seasons a request for the HD or 4K version would ask for: the picked ones it has
-    /// open, or all its open ones
+    /// open, or all its open ones that have aired, or if none have, all its open ones
     fn seasons(&self, is_4k: bool) -> Vec<u32> {
         let open = &self.versions[usize::from(is_4k)].open;
         if self.picked.is_empty() {
-            open.clone()
+            let aired: Vec<u32> = open
+                .iter()
+                .copied()
+                .filter(|n| !self.upcoming.contains(n))
+                .collect();
+            if aired.is_empty() {
+                open.clone()
+            } else {
+                aired
+            }
         } else {
             self.picked
                 .iter()
@@ -605,18 +654,30 @@ impl Card {
                 .iter()
                 .take(MAX_OPTIONS)
                 .map(|&n| {
-                    CreateSelectMenuOption::new(format!("Season {n}"), n.to_string())
+                    let label = if self.upcoming.contains(&n) {
+                        format!("Season {n} (not aired yet)")
+                    } else {
+                        format!("Season {n}")
+                    };
+                    CreateSelectMenuOption::new(label, n.to_string())
                         .default_selection(self.picked.contains(&n))
                 })
                 .collect::<Vec<_>>();
             #[allow(clippy::cast_possible_truncation)]
             let max = options.len() as u8;
+            let placeholder = if open.iter().all(|n| !self.upcoming.contains(n))
+                || open.iter().all(|n| self.upcoming.contains(n))
+            {
+                "All seasons"
+            } else {
+                "All aired seasons"
+            };
             rows.push(CreateActionRow::SelectMenu(
                 CreateSelectMenu::new(
                     format!("{id}-seasons"),
                     CreateSelectMenuKind::String { options },
                 )
-                .placeholder("All seasons")
+                .placeholder(placeholder)
                 .min_values(0)
                 .max_values(max),
             ));
@@ -749,6 +810,12 @@ impl Card {
         match (self.media, self.seasons(is_4k).as_slice()) {
             (Media::Movie(_), _) => request.into(),
             (_, [n]) => format!("{request} season {n}"),
+            (_, some)
+                if self.picked.is_empty()
+                    && some.len() < self.versions[usize::from(is_4k)].open.len() =>
+            {
+                format!("{request} all aired seasons")
+            }
             _ if self.picked.is_empty() => format!("{request} all seasons"),
             (_, many) => format!("{request} {} seasons", many.len()),
         }
@@ -1057,12 +1124,41 @@ pub(super) const fn status(
     }
 }
 
-/// One line per label, available first: "Downloaded: 1–3, 5". Each season is its number, how
-/// its status reads, and the status.
-fn season_lines(seasons: &[(u32, &str, Status)]) -> String {
-    if seasons.is_empty() {
-        return "None yet".into();
+/// Yellow, for waiting for approval
+const WAITING: Colour = Colour::new(0x00f1_c40f);
+/// Blue, for approved
+const APPROVED: Colour = Colour::new(0x0034_98db);
+/// Green, for downloaded
+const DOWNLOADED: Colour = Colour::new(0x002e_cc71);
+/// Red, for blocklisted (and on request posts, declined or failed)
+const BLOCKLISTED: Colour = Colour::new(0x0099_2d22);
+
+/// The embed color and the dot that marks a status's line, none if it hasn't been requested
+pub(super) const fn marker(s: Status) -> Option<(Colour, &'static str)> {
+    match s {
+        Status::Missing => None,
+        Status::Pending => Some((WAITING, "\u{1f7e1}")),
+        Status::Processing => Some((APPROVED, "\u{1f535}")),
+        Status::PartiallyAvailable | Status::Available => Some((DOWNLOADED, "\u{1f7e2}")),
+        Status::Blocklisted => Some((BLOCKLISTED, "\u{26d4}")),
     }
+}
+
+/// How far along a status is, for the embed's color: the furthest wins
+const fn progress(s: Status) -> u8 {
+    match s {
+        Status::Missing => 0,
+        Status::Blocklisted => 1,
+        Status::Pending => 2,
+        Status::Processing => 3,
+        Status::PartiallyAvailable | Status::Available => 4,
+    }
+}
+
+/// One line per label, available first, each label with `suffix`: "🟢 **Downloaded:** seasons
+/// 1–3, 5". Each season is its number, how its status reads, and the status. Seasons not
+/// requested are left out.
+fn season_lines(seasons: &[(u32, &str, Status)], suffix: &str) -> Vec<String> {
     let rank = |s: Status| match s {
         Status::Available => 0,
         Status::PartiallyAvailable => 1,
@@ -1071,20 +1167,29 @@ fn season_lines(seasons: &[(u32, &str, Status)]) -> String {
         Status::Missing => 4,
         Status::Blocklisted => 5,
     };
-    let mut lines: Vec<(u8, &str, Vec<u32>)> = Vec::new();
+    let mut lines: Vec<(u8, &str, &str, Vec<u32>)> = Vec::new();
     for &(n, label, s) in seasons {
-        match lines.iter_mut().find(|(_, l, _)| *l == label) {
+        let Some((_, dot)) = marker(s) else {
+            continue;
+        };
+        match lines.iter_mut().find(|(_, l, ..)| *l == label) {
             Some((.., numbers)) => numbers.push(n),
-            None => lines.push((rank(s), label, vec![n])),
+            None => lines.push((rank(s), label, dot, vec![n])),
         }
     }
     // Stable, so labels of the same status keep the order they first came in
     lines.sort_by_key(|&(rank, ..)| rank);
     lines
         .iter()
-        .map(|(_, label, numbers)| format!("{label}: {}", ranges(numbers)))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|(_, label, dot, numbers)| {
+            let seasons = if numbers.len() == 1 {
+                "season"
+            } else {
+                "seasons"
+            };
+            format!("{dot} **{label}{suffix}:** {seasons} {}", ranges(numbers))
+        })
+        .collect()
 }
 
 /// Ascending numbers with runs collapsed: `[1, 2, 3, 5]` -> "1–3, 5"
@@ -1145,10 +1250,18 @@ mod tests {
             season(8, Status::Processing, true, None),
         ];
         assert_eq!(
-            season_lines(&seasons),
-            "Downloaded: 1\u{2013}2\nAutomatically approved, download queued: 3, 7\n\
-             Approved, download started: 4\nAutomatically approved: 8\n\
-             Requested, waiting for approval: 5\nNot requested: 6"
+            season_lines(&seasons, ""),
+            [
+                "\u{1f7e2} **Downloaded:** seasons 1\u{2013}2",
+                "\u{1f535} **Automatically approved, download queued:** seasons 3, 7",
+                "\u{1f535} **Approved, download started:** season 4",
+                "\u{1f535} **Automatically approved:** season 8",
+                "\u{1f7e1} **Requested, waiting for approval:** season 5",
+            ]
+        );
+        assert_eq!(
+            season_lines(&seasons[..2], " in 4K"),
+            ["\u{1f7e2} **Downloaded in 4K:** season 1"]
         );
     }
 

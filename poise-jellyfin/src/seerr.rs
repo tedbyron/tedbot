@@ -644,12 +644,20 @@ impl Details {
         )
     }
 
-    /// Seasons that can be requested, in order: not specials, not empty
+    /// Seasons that can be requested, in order: not specials. Includes announced ones that
+    /// haven't aired yet.
     pub fn season_numbers(&self) -> impl Iterator<Item = u32> {
         self.seasons
             .iter()
-            .filter(|s| s.season_number > 0 && s.episode_count > 0)
+            .filter(|s| s.season_number > 0)
             .map(|s| s.season_number)
+    }
+
+    /// Whether season `n` hasn't aired yet: TMDB lists it with no episodes
+    pub fn upcoming(&self, n: u32) -> bool {
+        self.seasons
+            .iter()
+            .any(|s| s.season_number == n && s.episode_count == 0)
     }
 
     /// Requests the viewer may cancel: ones waiting for approval or approved but not downloaded
@@ -1577,7 +1585,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(show.title, "Nobody Wants This");
-        assert_eq!(show.season_numbers().collect::<Vec<_>>(), [1, 2, 3]);
+        assert_eq!(show.season_numbers().collect::<Vec<_>>(), [1, 2, 3, 4]);
+        assert!(show.upcoming(4) && !show.upcoming(3));
         assert_eq!(show.season_status(1), Status::Missing);
         assert_eq!(show.season_status(2), Status::Pending);
         assert_eq!(show.season_status(3), Status::Available);

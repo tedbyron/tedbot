@@ -168,34 +168,42 @@ store):
   default and Moonfin's. Seerr's webhook URL is set in dotfiles' `seerr.nix`.
 - **`/request <title>`** (done): search Seerr, one ephemeral card per result
   with poster, year, overview and status, ◀ ▶ through results, and a Request
-  button. Shows get a season dropdown (no pick means all open seasons; Discord
-  caps it at 25 options). Autocomplete fills in `movie:<id>` or `tv:<id>`.
-  Requests are made with `X-API-User` as the Seerr user whose `discordIds` match
-  the invoker, so Seerr's own permissions, quotas and auto-approve apply. Seerr
-  rejects search queries with any unencoded reserved character (even `+`), so
-  the query is percent-encoded by hand. Seerr's API will make a new request for
-  an available movie, so only show Request when the status is missing.
-  `seerr.public_url` links the title to the Seerr page. Users with Seerr's
-  Manage Requests or Advanced Requests get one quality menu shared by Request
-  and Request 4K (`request::pair`): each option is a default HD server profile
-  and the default 4K server profile with the same bracketed tags ("(Atmos)",
-  "[Anime]"), either side missing meaning Seerr's choice for that version. Seerr
-  doesn't check permissions on `profileId`, so the bot does. The card's rows:
-  seasons, quality, one row of Request, Request 4K, their bypass-quota versions
-  and their cancels, the Jellyfin/Moonfin/Seerr links, then ◀ ▶. Discord allows
-  5 rows of 5 buttons, so when that's all 6 the last spills onto a second row
-  and ◀ ▶ lead the links' row instead. Nothing picked lets Seerr choose (which
-  handles anime); admins can change it on `/requests` while the request is
-  pending. Users with Manage Requests and a quota get a "Request, bypass quota"
-  button (`ignoreQuota`); Manage Users means no quota at all. A "Cancel request"
-  button shows while a request is waiting for approval or approved but not
-  downloaded yet, not even in part: requesters for their own, bot admins
-  (`is_admin`) for anyone's. The bot checks this itself and asks Seerr as its
-  admin. Approved requests come out of Radarr/Sonarr directly (`arr.rs`,
-  optional `[radarr]`/`[sonarr]` config): queue items removed from qBittorrent,
-  then the movie deleted, or for shows only the request's seasons unmonitored
-  (the series goes only if nothing's left). Radarr/Sonarr are checked for files
-  first, since Seerr can lag behind, and nothing is touched if any exist.
+  button. The status leads the description (a `###` line per version for movies,
+  a bold line per status for seasons), each with a colored dot, and the embed's
+  color matches the furthest along: yellow waiting, blue approved, green
+  downloaded (`request::marker`). Nothing requested shows no status and no
+  color. Request posts are colored the same way, and red once declined or
+  failed; `/requests` cards aren't. Shows get a season dropdown (no pick means
+  all open seasons that have aired, or the unaired ones if that's all that's
+  open; Discord caps it at 25 options). Unaired seasons (TMDB lists them with no
+  episodes) are listed and pickable as "(not aired yet)", since they can be
+  requested. Autocomplete fills in `movie:<id>` or `tv:<id>`. Requests are made
+  with `X-API-User` as the Seerr user whose `discordIds` match the invoker, so
+  Seerr's own permissions, quotas and auto-approve apply. Seerr rejects search
+  queries with any unencoded reserved character (even `+`), so the query is
+  percent-encoded by hand. Seerr's API will make a new request for an available
+  movie, so only show Request when the status is missing. `seerr.public_url`
+  links the title to the Seerr page. Users with Seerr's Manage Requests or
+  Advanced Requests get one quality menu shared by Request and Request 4K
+  (`request::pair`): each option is a default HD server profile and the default
+  4K server profile with the same bracketed tags ("(Atmos)", "[Anime]"), either
+  side missing meaning Seerr's choice for that version. Seerr doesn't check
+  permissions on `profileId`, so the bot does. The card's rows: seasons,
+  quality, one row of Request, Request 4K, their bypass-quota versions and their
+  cancels, the Jellyfin/Moonfin/Seerr links, then ◀ ▶. Discord allows 5 rows of
+  5 buttons, so when that's all 6 the last spills onto a second row and ◀ ▶ lead
+  the links' row instead. Nothing picked lets Seerr choose (which handles
+  anime); admins can change it on `/requests` while the request is pending.
+  Users with Manage Requests and a quota get a "Request, bypass quota" button
+  (`ignoreQuota`); Manage Users means no quota at all. A "Cancel request" button
+  shows while a request is waiting for approval or approved but not downloaded
+  yet, not even in part: requesters for their own, bot admins (`is_admin`) for
+  anyone's. The bot checks this itself and asks Seerr as its admin. Approved
+  requests come out of Radarr/Sonarr directly (`arr.rs`, optional
+  `[radarr]`/`[sonarr]` config): queue items removed from qBittorrent, then the
+  movie deleted, or for shows only the request's seasons unmonitored (the series
+  goes only if nothing's left). Radarr/Sonarr are checked for files first, since
+  Seerr can lag behind, and nothing is touched if any exist.
 - **`/requests`** (done): ephemeral list of requests, newest first, 10 per page
   with ◀ 🔄 ▶ and an optional status filter. Everyone sees their own (via
   `requestedBy`); bot admins see everyone's. A menu opens one as a card (poster,
