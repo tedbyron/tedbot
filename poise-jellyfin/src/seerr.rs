@@ -836,15 +836,20 @@ pub enum Changed {
 }
 
 /// Body of `PUT /api/v1/request/{id}`. Seerr sets every field from it, so the ones not being
-/// changed are sent back as they were.
+/// changed are sent back as they were. Its schema refuses nulls, so unset fields are left out.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EditRequest<'a> {
     media_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
     server_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     profile_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     root_folder: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     language_profile_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tags: Option<&'a [u32]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     seasons: Option<&'a [u32]>,
@@ -1223,11 +1228,13 @@ impl Seerr {
 }
 
 /// Reads a response to changing a request: `ok` is success, and refusals carry Seerr's message,
-/// or `fallback` without one. Seerr answers 202 when an edit leaves no seasons to request.
+/// or `fallback` without one. Seerr answers 202 when an edit leaves no seasons to request, and
+/// 400 when its schema refuses the body.
 async fn changed(response: reqwest::Response, ok: StatusCode, fallback: &str) -> Result<Changed> {
     match response.status() {
         status if status == ok => Ok(Changed::Done),
         StatusCode::ACCEPTED
+        | StatusCode::BAD_REQUEST
         | StatusCode::UNAUTHORIZED
         | StatusCode::FORBIDDEN
         | StatusCode::NOT_FOUND
@@ -1702,6 +1709,34 @@ mod tests {
             );
             let approved = seerr.review(&http, 3, true).await.unwrap();
             assert!(matches!(approved, Changed::Done));
+        }
+
+        #[tokio::test]
+        async fn edit_leaves_out_nulls() {
+            let mut server = Server::new_async().await;
+            let edit = server
+                .mock("PUT", "/api/v1/request/440")
+                .match_body(Matcher::Json(json!({
+                    "mediaType": "tv", "serverId": 0, "profileId": 8,
+                    "rootFolder": "/tv", "tags": [], "seasons": [1],
+                })))
+                .with_body("{}")
+                .create_async()
+                .await;
+            let request: Request = serde_json::from_value(json!({
+                "id": 440, "status": 1, "is4k": false, "serverId": 0, "profileId": 7,
+                "rootFolder": "/tv", "languageProfileId": null, "tags": [],
+                "createdAt": "2026-11-17T16:54:20.000Z", "type": "tv",
+                "media": {"tmdbId": 224377, "mediaType": "tv", "status": 2},
+                "seasons": [{"id": 1, "seasonNumber": 1, "status": 1}]
+            }))
+            .unwrap();
+            let changed = seerr(&server)
+                .edit(&reqwest::Client::new(), &request, Some(8), &[1])
+                .await
+                .unwrap();
+            assert!(matches!(changed, Changed::Done));
+            edit.assert_async().await;
         }
 
         #[tokio::test]
