@@ -52,6 +52,14 @@ struct Person {
     r#type: Option<String>,
 }
 
+/// The parts of `GET /System/Info` the bot reads
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct SystemInfo {
+    /// Whether an update (a plugin's, usually) only applies once Jellyfin restarts
+    has_pending_restart: bool,
+}
+
 /// A connected client, from `GET /Sessions`
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -247,6 +255,18 @@ impl Jellyfin {
             .await?
             .error_for_status()?;
         Ok(())
+    }
+
+    /// Whether Jellyfin is waiting to be restarted for an update to apply
+    pub async fn pending_restart(&self, http: &reqwest::Client) -> Result<bool> {
+        let info: SystemInfo = self
+            .get(http, "/System/Info")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(info.has_pending_restart)
     }
 
     /// Every account

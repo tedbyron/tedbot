@@ -10,6 +10,8 @@
 //! (waiting for approval, or approved but not downloaded) that have no post. Posts are only edited
 //! when they'd change: Discord allows only a few edits a minute to messages over an hour old.
 //!
+//! Alertmanager's webhook is served too, at `/alertmanager` ([`alerts`]).
+//!
 //! Listens on localhost only. Point Seerr's webhook URL at `http://localhost:<port>/seerr`.
 //! `GET /health` answers 200, for uptime probes; it's only served once Discord is connected.
 
@@ -39,7 +41,7 @@ use tokio::{net::TcpListener, time::MissedTickBehavior};
 use tracing::{error, info, warn};
 
 use crate::{
-    Config, Error, MediaServer, Result,
+    Config, Error, MediaServer, Result, alerts,
     announce::{self, Event},
     commands::requests::{mark_gone, post_now, post_request},
     error::chain,
@@ -129,6 +131,12 @@ impl Listener {
         }
         let app = Router::new()
             .route("/seerr", post(notify))
+            .route(
+                "/alertmanager",
+                post(|State(hook): State<Arc<Hook>>, body: Bytes| async move {
+                    alerts::notify(&hook.discord, &hook.data, &body).await
+                }),
+            )
             .route("/health", get(|| async { StatusCode::OK }))
             .with_state(hook);
         if let Ok(addr) = self.listener.local_addr() {
@@ -603,6 +611,7 @@ mod tests {
             http,
             moonfin: false,
             jellyfin_restart: None,
+            jellyfin_restarting: std::sync::atomic::AtomicBool::new(false),
             channels: ChannelsConfig::default(),
             restart_bot: None,
             seerr: Seerr {
@@ -619,6 +628,7 @@ mod tests {
             admins: Vec::new(),
             members: Members::default(),
             profiles: ProfileCache::default(),
+            alerts: crate::alerts::Posts::default(),
         }));
         listener.spawn(Arc::new(Http::new("")), data);
 

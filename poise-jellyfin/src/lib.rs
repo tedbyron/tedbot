@@ -1,7 +1,8 @@
 //! A Jellyfin media server for [poise] Discord bots: slash commands for requesting media through
 //! Seerr (`/request`, `/requests`), seeing who's streaming (`/streams`), ErsatzTV's live TV
 //! guide (`/tv`), and admin tools (`/restart`, `/refresh-users`), plus Seerr's webhook, which
-//! posts new and available requests in Discord, and posts when a Jellyfin account is disabled.
+//! posts new and available requests in Discord, Alertmanager's webhook, which posts alerts
+//! with buttons (a Jellyfin restart), and posts when a Jellyfin account is disabled.
 //!
 //! The bot's data (poise's `U`) holds a [`MediaServer`] and implements `AsRef<MediaServer>`
 //! (`MediaServer` itself already does), and its error (`E`) converts from [`Error`]:
@@ -31,6 +32,7 @@
 //! so it doesn't stop the bot.
 
 mod accounts;
+mod alerts;
 mod announce;
 mod arr;
 mod commands;
@@ -41,7 +43,12 @@ mod jellyfin;
 mod seerr;
 mod webhook;
 
-use std::{fmt, ops::Deref, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    ops::Deref,
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
 
 use futures::future::BoxFuture;
 use poise::serenity_prelude::{self as serenity, ShardManager, UserId};
@@ -74,6 +81,8 @@ pub struct Shared {
     channels: ChannelsConfig,
     /// Restarts Jellyfin for `/restart`, if configured; else Jellyfin restarts itself
     jellyfin_restart: Option<Vec<String>>,
+    /// Whether Jellyfin is being restarted, so `/restart` and alert posts don't do it twice at once
+    jellyfin_restarting: AtomicBool,
     /// Restarts the bot for `/restart`, if it can be
     restart_bot: Option<RestartBot>,
     /// Seerr connection info
@@ -92,6 +101,8 @@ pub struct Shared {
     members: commands::requests::Members,
     /// The default servers' quality profiles, as fetched lately
     profiles: commands::requests::ProfileCache,
+    /// Alert posts with buttons, and the alerts posted lately
+    alerts: alerts::Posts,
 }
 
 impl MediaServer {
@@ -137,6 +148,7 @@ impl MediaServer {
             },
             moonfin: cfg.jellyfin.moonfin,
             jellyfin_restart: cfg.jellyfin.restart_command.clone(),
+            jellyfin_restarting: AtomicBool::new(false),
             channels,
             restart_bot,
             seerr: seerr::Seerr {
@@ -154,6 +166,7 @@ impl MediaServer {
             admins,
             members: commands::requests::Members::default(),
             profiles: commands::requests::ProfileCache::default(),
+            alerts: alerts::Posts::default(),
         })))
     }
 }
@@ -219,8 +232,8 @@ pub fn commands<U: Data, E: From<Error> + Send + Sync + 'static>() -> Vec<poise:
     ]
 }
 
-/// Handles presses on request posts, whose buttons outlive any command. Call it from poise's
-/// `event_handler` with every event; it ignores the rest.
+/// Handles presses on request and alert posts, whose buttons outlive any command. Call it from
+/// poise's `event_handler` with every event; it ignores the rest.
 ///
 /// Returns [`Error::SkipChecksForOwners`] on `Ready` if `skip_checks_for_owners` is set, since
 /// owners would skip the Seerr link check the commands rely on. Poise only passes that to
@@ -236,12 +249,9 @@ pub async fn handle_event<U: Data, E: From<Error>>(
         serenity::FullEvent::InteractionCreate {
             interaction: serenity::Interaction::Component(press),
         } => {
-            commands::requests::post_press(
-                framework.serenity_context,
-                framework.user_data.server(),
-                press,
-            )
-            .await?;
+            let (ctx, data) = (framework.serenity_context, framework.user_data.server());
+            commands::requests::post_press(ctx, data, press).await?;
+            alerts::press(ctx, data, press).await?;
         }
         _ => {}
     }

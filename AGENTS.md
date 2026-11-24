@@ -285,6 +285,25 @@ store):
   its shards down so `main` exits, and its agent's `KeepAlive` (dotfiles'
   `tedbot.nix`) starts it again; killing itself with `kickstart -k` could take
   `launchctl` down too.
+- **Alert posts** (done, `alerts.rs`): Alertmanager's webhook, at
+  `/alertmanager` on the Seerr webhook's listener. Dotfiles' `alertmanager.nix`
+  routes alerts with a `restart` label there instead of its Discord webhook,
+  since webhook posts can't have interactive buttons. Each alert is posted in
+  `discord.admin_channels` styled like Alertmanager's posts (summary as title,
+  red, then green with the `resolved` annotation); `restart = "jellyfin"` adds a
+  Restart Jellyfin button (`alert-restart:` custom ids, admins only) that
+  confirms ephemerally with the stream count like `/restart` and runs the same
+  restart (`restart::restart_jellyfin`, which won't run twice at once). The
+  buttons carry the alert's fingerprint and come off all its posts once Jellyfin
+  is back up, or when the alert resolves (posts kept in memory by fingerprint,
+  in `MediaServer`). A press on a post the bot doesn't know (from before it
+  restarted) first asks Jellyfin's `/System/Info` for `HasPendingRestart`, and
+  if it's up and doesn't need one, takes the button off instead. An alert that
+  couldn't be posted anywhere answers 502 so Alertmanager retries; alerts posted
+  in the last hour (same fingerprint, status and `startsAt`) aren't posted
+  again, so a retry doesn't duplicate them. Alertmanager only sends these to the
+  bot, so while it's down they're retried, and the `ServiceDown` probe of its
+  `/health` (through Alertmanager's Discord webhook) says so.
 - **`/refresh-users`** (done): admins only, hidden like `/restart`. Forgets the
   member lookups and refetches who linked what in Seerr
   (`Seerr::refresh_links`), so a newly linked account shows as a mention without

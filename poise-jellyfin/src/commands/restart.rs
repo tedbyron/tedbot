@@ -6,7 +6,10 @@
 //! with its configured restart command, or else restarts itself. The bot restarts however it was
 //! given ([`crate::RestartBot`]).
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
 
 use poise::{
     ChoiceParameter, CreateReply, command,
@@ -41,21 +44,26 @@ impl Service {
     /// What restarting it interrupts, for the confirmation
     async fn interrupts(self, data: &MediaServer) -> String {
         match self {
-            Self::Jellyfin => match data.jellyfin.playing(&data.http).await {
-                Ok(sessions) => match sessions.len() {
-                    0 => "Nothing is playing.".to_owned(),
-                    1 => "This stops the 1 stream playing.".to_owned(),
-                    n => format!("This stops the {n} streams playing."),
-                },
-                Err(e) => {
-                    warn!("Fetching sessions: {}", chain(&e));
-                    "Jellyfin isn't answering, so streams can't be counted.".to_owned()
-                }
-            },
+            Self::Jellyfin => jellyfin_interrupts(data).await,
             Self::Bot => "Buttons on command replies already sent stop working (request \
                              posts' keep working), and Seerr notifications sent while it's down \
                              are missed."
                 .to_owned(),
+        }
+    }
+}
+
+/// How many streams restarting Jellyfin would stop, for a confirmation
+pub async fn jellyfin_interrupts(data: &MediaServer) -> String {
+    match data.jellyfin.playing(&data.http).await {
+        Ok(sessions) => match sessions.len() {
+            0 => "Nothing is playing.".to_owned(),
+            1 => "This stops the 1 stream playing.".to_owned(),
+            n => format!("This stops the {n} streams playing."),
+        },
+        Err(e) => {
+            warn!("Fetching sessions: {}", chain(&e));
+            "Jellyfin isn't answering, so streams can't be counted.".to_owned()
         }
     }
 }
@@ -137,32 +145,55 @@ async fn restart_run<U: Data, E: From<Error>>(
         return Ok(());
     }
 
-    let started = Instant::now();
-    let restarted = match &data.jellyfin_restart {
-        Some(command) => run(command).await,
-        None => data.jellyfin.restart(&data.http).await.map_err(Error::from),
-    };
-    let content = if let Err(e) = restarted {
-        error!("Restarting {name}: {}", chain(&e));
-        format!("Couldn't restart {name} \u{1fae4}")
-    } else {
-        info!("{} restarted {name}", ctx.author().name);
-        sleep(POLL_INTERVAL).await;
-        loop {
-            if data.jellyfin.healthy(&data.http).await {
-                break format!("{name} is back up after {}s", started.elapsed().as_secs());
-            }
-            if started.elapsed() > START_TIMEOUT {
-                break format!("{name} restarted, but isn't answering after 3 minutes \u{1fae4}");
-            }
-            sleep(POLL_INTERVAL).await;
-        }
-    };
+    let (_, content) = restart_jellyfin(data, &ctx.author().name).await;
     EditInteractionResponse::new()
         .content(content)
         .execute(ctx, &press.token)
         .await?;
     Ok(())
+}
+
+/// Restarts Jellyfin for `by`, with its restart command or else by asking it to, and waits for
+/// its health check to pass again. Returns whether it's back up, and what to tell `by`. Does
+/// nothing if it's being restarted already.
+pub async fn restart_jellyfin(data: &MediaServer, by: &str) -> (bool, String) {
+    /// Clears `jellyfin_restarting` however the restart ends
+    struct Restarting<'a>(&'a AtomicBool);
+    impl Drop for Restarting<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+
+    let name = Service::Jellyfin.name();
+    if data.jellyfin_restarting.swap(true, Ordering::Acquire) {
+        return (false, format!("{name} is already being restarted"));
+    }
+    let _restarting = Restarting(&data.jellyfin_restarting);
+    let started = Instant::now();
+    let restarted = match &data.jellyfin_restart {
+        Some(command) => run(command).await,
+        None => data.jellyfin.restart(&data.http).await.map_err(Error::from),
+    };
+    if let Err(e) = restarted {
+        error!("Restarting {name}: {}", chain(&e));
+        return (false, format!("Couldn't restart {name} \u{1fae4}"));
+    }
+    info!("{by} restarted {name}");
+    sleep(POLL_INTERVAL).await;
+    loop {
+        if data.jellyfin.healthy(&data.http).await {
+            let secs = started.elapsed().as_secs();
+            return (true, format!("{name} is back up after {secs}s"));
+        }
+        if started.elapsed() > START_TIMEOUT {
+            return (
+                false,
+                format!("{name} restarted, but isn't answering after 3 minutes \u{1fae4}"),
+            );
+        }
+        sleep(POLL_INTERVAL).await;
+    }
 }
 
 /// Runs `command` (program, then arguments), failing if it does

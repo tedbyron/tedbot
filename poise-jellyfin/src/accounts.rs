@@ -6,14 +6,13 @@
 use std::{collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
 
 use chrono::{DateTime, TimeDelta, Utc};
-use poise::serenity_prelude::{
-    Colour, CreateAllowedMentions, CreateEmbed, CreateMessage, Http, Timestamp,
-};
+use poise::serenity_prelude::{CreateAllowedMentions, CreateEmbed, CreateMessage, Http, Timestamp};
 use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 
 use crate::{
     MediaServer,
+    alerts::{FIRING, RESOLVED},
     announce::requester,
     commands::escape,
     error::chain,
@@ -25,10 +24,6 @@ use crate::{
 const POLL_EVERY: Duration = Duration::from_secs(15 * 60);
 /// How many of the activity log's newest entries are searched for why an account was disabled
 const ACTIVITY: u32 = 100;
-/// Alertmanager's colour for firing alerts
-const DISABLED: Colour = Colour::new(0x0099_2d22);
-/// Alertmanager's colour for resolved alerts
-const ENABLED: Colour = Colour::new(0x002e_cc71);
 
 /// Posts in `admin_channels` when a Jellyfin account is disabled or enabled again.
 ///
@@ -98,7 +93,7 @@ async fn post(discord: &Http, data: &MediaServer, user: &User) {
     if disabled {
         embed = embed
             .title(format!("{name}'s Jellyfin account was disabled"))
-            .colour(DISABLED);
+            .colour(FIRING);
         let why = match data.jellyfin.activity(&data.http, ACTIVITY).await {
             Ok(entries) => lockout(&entries, user, Utc::now()),
             Err(e) => {
@@ -112,7 +107,7 @@ async fn post(discord: &Http, data: &MediaServer, user: &User) {
     } else {
         embed = embed
             .title(format!("{name}'s Jellyfin account is enabled again"))
-            .colour(ENABLED);
+            .colour(RESOLVED);
     }
 
     let linked = data

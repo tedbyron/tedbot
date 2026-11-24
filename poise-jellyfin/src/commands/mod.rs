@@ -93,7 +93,7 @@ fn is_admin<U: Data, E: From<Error>>(ctx: Context<'_, U, E>) -> bool {
 }
 
 /// Whether `user` is one of the configured admins
-fn is_admin_user(data: &MediaServer, user: UserId) -> bool {
+pub fn is_admin_user(data: &MediaServer, user: UserId) -> bool {
     data.admins.contains(&user)
 }
 
